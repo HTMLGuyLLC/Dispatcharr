@@ -107,7 +107,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
           icon: <Video size={20} />,
         },
         {
-          label: 'M3U & EPG Manager',
+          label: 'M3U/XC/EPG Manager',
           icon: <Play size={20} />,
           path: '/sources',
         },
@@ -287,28 +287,6 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                 }
               />
             )}
-
-            {!collapsed &&
-              authUser &&
-              authUser.user_level === USER_LEVELS.RESELLER && (
-                <Box
-                  style={{
-                    padding: '8px 0',
-                    borderTop: '1px solid #2A2A2E',
-                    borderBottom: '1px solid #2A2A2E',
-                    marginBottom: 5,
-                  }}
-                >
-                  <Group justify="space-between">
-                    <Text size="xs" c="dimmed">
-                      Credits
-                    </Text>
-                    <Text size="sm" fw={600} c="white">
-                      {authUser.credits || 0}
-                    </Text>
-                  </Group>
-                </Box>
-              )}
 
             {!collapsed && authUser && (
               <Group

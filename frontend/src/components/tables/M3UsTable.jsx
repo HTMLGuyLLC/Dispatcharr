@@ -829,7 +829,7 @@ const M3UTable = () => {
             marginBottom: 0,
           }}
         >
-          M3U Accounts
+          M3U and XC Accounts
         </Text>
         <Button
           leftSection={<SquarePlus size={14} />}
@@ -844,7 +844,7 @@ const M3UTable = () => {
             color: 'white',
           }}
         >
-          Add M3U
+          Add Account
         </Button>
       </Flex>
 

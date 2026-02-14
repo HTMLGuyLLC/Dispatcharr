@@ -53,9 +53,7 @@ const User = ({ user = null, isOpen, onClose }) => {
       xc_passthrough_enabled: false,
       connection_limit: 1,
       expires_at: null,
-      credits: 0,
-      reseller_credit_mode: 'user',
-      reseller_refunds_enabled: false,
+
     },
 
     validate: (values) => ({
@@ -110,7 +108,7 @@ const User = ({ user = null, isOpen, onClose }) => {
 
     // Convert numeric fields from string if they came from Select/NumberInput
     values.connection_limit = parseInt(values.connection_limit) || 1;
-    values.credits = parseInt(values.credits) || 0;
+
     values.user_level = parseInt(values.user_level);
 
     if (values.expires_at) {
@@ -166,7 +164,7 @@ const User = ({ user = null, isOpen, onClose }) => {
         xc_passthrough_enabled: customProps.xc_passthrough_enabled || false,
         connection_limit: user.connection_limit || 1,
         expires_at: user.expires_at ? new Date(user.expires_at) : null,
-        credits: user.credits || 0,
+
       });
 
       const initialProfileIds = user.channel_profiles.length > 0
@@ -521,36 +519,7 @@ Profile(s): ${profileNames}`;
 
 
 
-            {/* Admin-only controls for Reseller Configuration */}
-            {currentUser.user_level === USER_LEVELS.ADMIN &&
-              form.getValues().user_level == USER_LEVELS.RESELLER && (
-                <>
-                  <NumberInput
-                    label="Credits"
-                    description="Available for creating sub-users"
-                    {...form.getInputProps('credits')}
-                    key={form.key('credits')}
-                  />
-                  <Select
-                    label="Credit Mode"
-                    data={[
-                      { label: 'Per User', value: 'user' },
-                      { label: 'Per Connection', value: 'connection' },
-                    ]}
-                    {...form.getInputProps('reseller_credit_mode')}
-                    key={form.key('reseller_credit_mode')}
-                  />
-                  <Switch
-                    label="Enable Refunds"
-                    description="Refund credits on user delete/downgrade"
-                    {...form.getInputProps('reseller_refunds_enabled', {
-                      type: 'checkbox',
-                    })}
-                    key={form.key('reseller_refunds_enabled')}
-                    mt="xs"
-                  />
-                </>
-              )}
+
           </Stack>
         </Group>
 

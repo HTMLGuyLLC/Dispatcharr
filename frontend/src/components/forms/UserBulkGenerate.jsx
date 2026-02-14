@@ -121,29 +121,10 @@ const UserBulkGenerate = ({ isOpen, onClose }) => {
                         Note: Usernames and passwords will be randomly generated.
                     </Text>
 
-                    {authUser?.user_level === USER_LEVELS.RESELLER && (
-                        <Text size="sm" fw={500} c={
-                            (authUser.reseller_credit_mode === 1
-                                ? form.values.count * form.values.connection_limit
-                                : form.values.count) > authUser.credits
-                                ? 'red' : 'blue'
-                        }>
-                            Estimated Cost: {authUser.reseller_credit_mode === 1
-                                ? form.values.count * form.values.connection_limit
-                                : form.values.count} Credits
-                            {' '}(Available: {authUser.credits})
-                        </Text>
-                    )}
-
                     <Flex justify="flex-end" mt="md">
                         <Button
                             type="submit"
                             loading={isLoading}
-                            disabled={authUser?.user_level === USER_LEVELS.RESELLER && (
-                                authUser.reseller_credit_mode === 1
-                                    ? form.values.count * form.values.connection_limit
-                                    : form.values.count
-                            ) > authUser.credits}
                         >
                             Generate Streamers
                         </Button>

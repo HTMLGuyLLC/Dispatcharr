@@ -229,15 +229,6 @@ Profile(s): ${profileNames}`;
         ),
       },
       {
-        header: 'Credits',
-        accessorKey: 'credits',
-        size: 80,
-        cell: ({ getValue, row }) => {
-          if (row.original.user_level !== USER_LEVELS.RESELLER) return '-';
-          return <Text size="sm">{getValue() || 0}</Text>;
-        },
-      },
-      {
         header: 'Username',
         accessorKey: 'username',
         size: 150,
