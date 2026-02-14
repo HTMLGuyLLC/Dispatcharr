@@ -5,7 +5,6 @@ from .api_views import (
     ChannelViewSet,
     ChannelGroupViewSet,
     BulkDeleteStreamsAPIView,
-    BulkDeleteChannelsAPIView,
     BulkDeleteLogosAPIView,
     CleanupUnusedLogosAPIView,
     LogoViewSet,
@@ -37,7 +36,6 @@ router.register(r'recurring-rules', RecurringRecordingRuleViewSet, basename='rec
 urlpatterns = [
     # Bulk delete is a single APIView, not a ViewSet
     path('streams/bulk-delete/', BulkDeleteStreamsAPIView.as_view(), name='bulk_delete_streams'),
-    path('channels/bulk-delete/', BulkDeleteChannelsAPIView.as_view(), name='bulk_delete_channels'),
     path('logos/bulk-delete/', BulkDeleteLogosAPIView.as_view(), name='bulk_delete_logos'),
     path('logos/cleanup/', CleanupUnusedLogosAPIView.as_view(), name='cleanup_unused_logos'),
     path('channels/<int:channel_id>/streams/', GetChannelStreamsAPIView.as_view(), name='get_channel_streams'),

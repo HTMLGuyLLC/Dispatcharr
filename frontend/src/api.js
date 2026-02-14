@@ -298,6 +298,16 @@ export default class API {
     }
   }
 
+  static async getChannelGroupStats() {
+    try {
+      const response = await request(`${host}/api/channels/groups/stats/`);
+      return response;
+    } catch (e) {
+      console.error('Failed to retrieve group stats:', e);
+      return { groups: [] };
+    }
+  }
+
   static async addChannelGroup(values) {
     try {
       const response = await request(`${host}/api/channels/groups/`, {
@@ -340,6 +350,79 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to update channel group', e);
+    }
+  }
+
+  static async updateGroupSortSettings(groupId, sortMode, sortField = null) {
+    try {
+      const payload = { sort_mode: sortMode };
+      if (sortField !== null) {
+        payload.sort_field = sortField;
+      }
+      const response = await request(`${host}/api/channels/groups/${groupId}/`, {
+        method: 'PATCH',
+        body: payload,
+      });
+
+      if (response.id) {
+        useChannelsStore.getState().updateChannelGroup(response);
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to update sort settings', e);
+    }
+  }
+
+  static async reorderGroupChannels(groupId, channelIds) {
+    try {
+      const response = await request(
+        `${host}/api/channels/groups/${groupId}/reorder-channels/`,
+        {
+          method: 'POST',
+          body: { channel_ids: channelIds },
+        }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to reorder channels', e);
+    }
+  }
+
+  /**
+   * Fetch all channel IDs for a group, in current sort order.
+   * Lightweight helper used for reorder-after-insert operations.
+   */
+  static async getGroupChannelIds(groupName, profileId = null) {
+    try {
+      const params = new URLSearchParams({
+        channel_group: groupName,
+        page_size: '1000',  // Reduced from 10000 to prevent timeouts
+        show_disabled: 'true', // Include all channels, not just enabled ones
+      });
+
+      // Include profile filter if provided and not '0' (all profiles)
+      if (profileId && profileId !== '0') {
+        params.set('channel_profile_id', profileId);
+      }
+
+      const url = `${host}/api/channels/channels/?${params}`;
+      console.log('[API] getGroupChannelIds URL:', url);
+
+      const response = await request(url);
+      console.log('[API] getGroupChannelIds response keys:', Object.keys(response || {}));
+      console.log('[API] getGroupChannelIds response.results:', response?.results);
+      console.log('[API] getGroupChannelIds response.count:', response?.count);
+      console.log('[API] getGroupChannelIds Array.isArray(response):', Array.isArray(response));
+
+      // Handle both array responses and paginated object responses
+      const channels = Array.isArray(response) ? response : (response?.results || []);
+      const channelIds = channels.map(c => c.id);
+      console.log('[API] getGroupChannelIds returning', channelIds.length, 'IDs:', channelIds);
+      return channelIds;
+    } catch (e) {
+      console.error('Failed to fetch group channel IDs:', e);
+      return [];
     }
   }
 
@@ -716,10 +799,79 @@ export default class API {
     }
   }
 
+  static async createEmptyChannel(values) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/`,
+        {
+          method: 'POST',
+          body: values,
+        }
+      );
+
+      if (response.id) {
+        useChannelsStore.getState().addChannel(response);
+      }
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create empty channel', e);
+    }
+  }
+
+  static async bulkDeleteChannels(channelIds) {
+    try {
+      return await request(`${host}/api/channels/channels/bulk-delete/`, {
+        method: 'DELETE',
+        body: { channel_ids: channelIds },
+      });
+    } catch (e) {
+      errorNotification('Failed to delete channels', e);
+      throw e;
+    }
+  }
+
+  static async bulkEditChannels(updates) {
+    try {
+      return await request(`${host}/api/channels/channels/edit/bulk/`, {
+        method: 'PATCH',
+        body: updates,
+      });
+    } catch (e) {
+      errorNotification('Failed to bulk edit channels', e);
+      throw e;
+    }
+  }
+
+  static async bulkDedupeChannels(channelIds) {
+    try {
+      return await request(`${host}/api/channels/channels/bulk-dedupe/`, {
+        method: 'POST',
+        body: { channel_ids: channelIds },
+      });
+    } catch (e) {
+      errorNotification('Failed to deduplicate channels', e);
+      throw e;
+    }
+  }
+
+  static async clearGroupChannels(groupId) {
+    try {
+      return await request(`${host}/api/channels/groups/${groupId}/clear-channels/`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification('Failed to clear group channels', e);
+      throw e;
+    }
+  }
+
+
   static async createChannelsFromStreamsAsync(
     streamIds,
     channelProfileIds = null,
-    startingChannelNumber = null
+    startingChannelNumber = null,
+    channelGroupId = null
   ) {
     try {
       const requestBody = {
@@ -732,6 +884,10 @@ export default class API {
 
       if (startingChannelNumber !== null) {
         requestBody.starting_channel_number = startingChannelNumber;
+      }
+
+      if (channelGroupId !== null) {
+        requestBody.channel_group_id = channelGroupId;
       }
 
       const response = await request(
@@ -926,6 +1082,16 @@ export default class API {
       await API.requeryStreams();
     } catch (e) {
       errorNotification('Failed to delete streams', e);
+    }
+  }
+
+  static async checkStreamUsage(id) {
+    try {
+      const response = await request(`${host}/api/channels/streams/${id}/check-usage/`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to check stream usage', e);
+      return { is_used: false, channel_count: 0, channels: [] };
     }
   }
 
@@ -1933,9 +2099,15 @@ export default class API {
     }
   }
 
-  static async matchEpg(channelIds = null) {
+  static async matchEpg(channelIds = null, options = {}) {
     try {
       const requestBody = channelIds ? { channel_ids: channelIds } : {};
+      if (options.channelGroup) {
+        requestBody.channel_group = options.channelGroup;
+      }
+      if (options.profileId) {
+        requestBody.profile_id = options.profileId;
+      }
 
       const response = await request(
         `${host}/api/channels/channels/match-epg/`,
@@ -2296,6 +2468,24 @@ export default class API {
     }
   }
 
+  static async createChannelProfileFromSource(name, sourceIds, includeChannels = true) {
+    try {
+      const response = await request(`${host}/api/channels/profiles/from-source/`, {
+        method: 'POST',
+        body: {
+          name,
+          source_ids: sourceIds,
+          include_channels: includeChannels,
+        },
+      });
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to create channel profile from source', e);
+      throw e;
+    }
+  }
+
   static async updateChannelProfile(values) {
     const { id, ...payload } = values;
 
@@ -2337,9 +2527,77 @@ export default class API {
         method: 'DELETE',
       });
 
-      useChannelsStore.getState().removeProfiles([id]);
+      // Note: Store update is handled by the calling component via fetchChannelProfiles()
     } catch (e) {
       errorNotification(`Failed to delete channel profile ${id}`, e);
+      throw e;
+    }
+  }
+
+  // ── Profile Group management ──
+
+  static async getProfileGroups(profileId) {
+    try {
+      const response = await request(
+        `${host}/api/channels/profiles/${profileId}/groups/`
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to get profile groups', e);
+      return [];
+    }
+  }
+
+  static async addProfileGroup(profileId, { channel_group_id, name, duplicate_from_id }) {
+    try {
+      let body = { name };
+      if (channel_group_id) {
+        body = { channel_group_id };
+      } else if (duplicate_from_id) {
+        body = { name, duplicate_from_id };
+      }
+      const response = await request(
+        `${host}/api/channels/profiles/${profileId}/add-group/`,
+        { method: 'POST', body }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to add group to profile', e);
+    }
+  }
+
+  static async removeProfileGroup(profileId, channelGroupId) {
+    try {
+      await request(
+        `${host}/api/channels/profiles/${profileId}/remove-group/`,
+        { method: 'POST', body: { channel_group_id: channelGroupId } }
+      );
+    } catch (e) {
+      errorNotification('Failed to remove group from profile', e);
+    }
+  }
+
+  static async reorderProfileGroups(profileId, groupIds) {
+    try {
+      const response = await request(
+        `${host}/api/channels/profiles/${profileId}/reorder-groups/`,
+        { method: 'POST', body: { group_ids: groupIds } }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to reorder profile groups', e);
+    }
+  }
+
+  static async toggleProfileGroup(profileId, channelGroupId, isActive) {
+    try {
+      const response = await request(
+        `${host}/api/channels/profiles/${profileId}/toggle-group/`,
+        { method: 'PATCH', body: { channel_group_id: channelGroupId, is_active: isActive } }
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to toggle profile group', e);
     }
   }
 
@@ -2500,7 +2758,7 @@ export default class API {
       // Optimistically remove locally for instant UI update
       try {
         useChannelsStore.getState().removeRecording(id);
-      } catch {}
+      } catch { }
     } catch (e) {
       errorNotification(`Failed to delete recording ${id}`, e);
     }
@@ -2716,7 +2974,23 @@ export default class API {
 
       return response;
     } catch (e) {
-      errorNotification('Failed to fetch users', e);
+      errorNotification('Failed to create user', e);
+    }
+  }
+
+  static async bulkGenerateUsers(body) {
+    try {
+      const response = await request(`${host}/api/accounts/users/bulk_generate/`, {
+        method: 'POST',
+        body,
+      });
+
+      // Refresh users list after bulk generation
+      await useUsersStore.getState().fetchUsers();
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to bulk generate users', e);
     }
   }
 
@@ -2744,6 +3018,28 @@ export default class API {
       useUsersStore.getState().removeUser(id);
     } catch (e) {
       errorNotification('Failed to delete user', e);
+    }
+  }
+
+  static async validateXCCredentials(body) {
+    try {
+      return await request(`${host}/api/accounts/users/validate_xc_credentials/`, {
+        method: 'POST',
+        body,
+      });
+    } catch (e) {
+      // Don't use errorNotification here as we handle it in the component
+      throw e;
+    }
+  }
+
+  static async syncXCInfo(id) {
+    try {
+      return await request(`${host}/api/accounts/users/${id}/sync_xc_info/`, {
+        method: 'POST',
+      });
+    } catch (e) {
+      errorNotification('Failed to sync XC info', e);
     }
   }
 

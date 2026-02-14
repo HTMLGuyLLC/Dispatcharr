@@ -1,5 +1,13 @@
 # 🎬 Dispatcharr — Your Ultimate IPTV & Stream Management Companion
 
+> [!IMPORTANT]
+> **Dispatcharr Fork Highlights**
+> This fork introduces advanced features for stream hosting and management:
+> - **All-New Profile Management**: Intuitive drag-and-drop interface for organizing and managing profiles with ease.
+> - **Advanced User Management**: Per-user connection limits (Redis-backed) and account expiration.
+> - **Full Xtream Codes API**: High-performance implementation for wide client compatibility.
+> - **Proxy Security**: Authenticated playback tracking across both M3U and XC protocols.
+
 <p align="center">
   <img src="https://github.com/Dispatcharr/Dispatcharr/blob/main/frontend/src/images/logo.png?raw=true" height="200" alt="Dispatcharr Logo" />
 </p>
@@ -9,6 +17,11 @@
 ## 📖 What is Dispatcharr?
 
 Dispatcharr is an **open-source powerhouse** for managing IPTV streams, EPG data, and VOD content with elegance and control.\
+### 📜 License
+
+Dispatcharr is open-source software licensed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). 
+
+**Fork Notice:** This version is a fork of the [original Dispatcharr project](https://github.com/Dispatcharr/Dispatcharr). All modifications and new features are contributed under the same CC BY-NC-SA 4.0 license.
 Born from necessity and built with passion, it started as a personal project by **[OkinawaBoss](https://github.com/OkinawaBoss)** and evolved with contributions from legends like **[dekzter](https://github.com/dekzter)**, **[SergeantPanda](https://github.com/SergeantPanda)** and **Bucatini**.
 
 > Think of Dispatcharr as the \*arr family's IPTV cousin — simple, smart, and designed for streamers who want reliability and flexibility.
@@ -48,7 +61,8 @@ Build custom integrations using Dispatcharr's robust plugin system. Automate tas
 ## ✨ Why You'll Love Dispatcharr
 
 ✅ **Stream Proxy & Relay** — Intercept and proxy IPTV streams with real-time client management\
-✅ **M3U & Xtream Codes** — Import, filter, and organize playlists with multiple backend support\
+✅ **Full Xtream Codes API** — Complete XC API implementation for broad client compatibility\
+✅ **Advanced User Management** — Expiration dates, per-user connection limits, and bulk generation\
 ✅ **EPG Matching & Generation** — Auto-match EPG to channels or generate custom TV guides\
 ✅ **Video on Demand** — Stream movies and TV series with rich metadata and IMDB/TMDB integration\
 ✅ **Multi-Format Output** — Export as M3U, XMLTV EPG, Xtream Codes API, or HDHomeRun device\
@@ -86,12 +100,12 @@ Build custom integrations using Dispatcharr's robust plugin system. Automate tas
 ### 🐳 Quick Start with Docker (Recommended)
 
 ```bash
-docker pull ghcr.io/dispatcharr/dispatcharr:latest
+docker pull stebner55/dispatcharr:latest
 docker run -d \
   -p 9191:9191 \
   --name dispatcharr \
   -v dispatcharr_data:/data \
-  ghcr.io/dispatcharr/dispatcharr:latest
+  stebner55/dispatcharr:latest
 ```
 
 > Customize ports and volumes to fit your setup.
@@ -131,16 +145,14 @@ Here's how you can join the party:
 
 ## 📚 Documentation & Roadmap
 
-- 📖 **Documentation:** [Dispatcharr Docs](https://dispatcharr.github.io/Dispatcharr-Docs/)
+- 📖 **Documentation:** [Official Dispatcharr Docs](https://dispatcharr.github.io/Dispatcharr-Docs/) _(Note: This documentation is for the base project. Specific fork features like the Reseller Tier are documented in the [walkthrough.md](./.gemini/antigravity/brain/901f7bba-d866-49a8-b786-2009bc7ac6a3/walkthrough.md) file)._
 
 **Upcoming Features (in no particular order):**
 
-- 🎬 **VOD Management Enhancements** — Granular metadata control and cleanup of unwanted VOD content
 - 📁 **Media Library** — Import local files and serve them over XC API
-- 👥 **Enhanced User Management** — Customizable XC API output per user account
-- 🔄 **Output Stream Profiles** — Different clients with different stream profiles (bandwidth control, quality tiers)
+- � **Webhooks** — Event-driven integrations and automations
+- 🎬 **VOD Management Enhancements** — Granular metadata control and cleanup of unwanted VOD content
 - 🔌 **Fallback Videos** — Automatic fallback content when channels are unavailable
-- 📡 **Webhooks** — Event-driven integrations and automations
 
 ---
 
@@ -162,10 +174,11 @@ For full license details, see [LICENSE](https://creativecommons.org/licenses/by-
 
 ---
 
-## ✉️ Connect With Us
+Have a question about this fork? Want to suggest a feature?\
+➡️ **[Open an issue here](issues)**
 
-Have a question? Want to suggest a feature? Just want to say hi?\
-➡️ **[Open an issue](https://github.com/Dispatcharr/Dispatcharr/issues)** or reach out on [Discord](https://discord.gg/Sp45V5BcxU).
+To join the broader Dispatcharr community or get help with the base project:\
+➡️ Reach out on the [Original project Discord](https://discord.gg/Sp45V5BcxU).
 
 ---
 

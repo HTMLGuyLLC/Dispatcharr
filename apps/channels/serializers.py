@@ -1,5 +1,8 @@
 import json
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from rest_framework import serializers
 from .models import (
@@ -11,6 +14,7 @@ from .models import (
     Logo,
     ChannelProfile,
     ChannelProfileMembership,
+    ProfileGroup,
     Recording,
     RecurringRecordingRule,
 )
@@ -64,21 +68,30 @@ class LogoSerializer(serializers.ModelSerializer):
         return reverse("api:channels:logo-cache", args=[obj.id])
 
     def get_channel_count(self, obj):
-        """Get the number of channels using this logo"""
-        return obj.channels.count()
+        """Get the total number of channels and groups using this logo"""
+        channel_count = obj.channels.count()
+        group_count = obj.groups.count()
+        return channel_count + group_count
 
     def get_is_used(self, obj):
-        """Check if this logo is used by any channels"""
-        return obj.channels.exists()
+        """Check if this logo is used by any channels or groups"""
+        return obj.channels.exists() or obj.groups.exists()
 
     def get_channel_names(self, obj):
-        """Get the names of channels using this logo (limited to first 5)"""
+        """Get the names of channels and groups using this logo (limited to first 5 total)"""
         names = []
 
         # Get channel names
         channels = obj.channels.all()[:5]
         for channel in channels:
             names.append(f"Channel: {channel.name}")
+
+        # Get group names (only if we haven't reached 5 items yet)
+        remaining_slots = 5 - len(names)
+        if remaining_slots > 0:
+            groups = obj.groups.all()[:remaining_slots]
+            for group in groups:
+                names.append(f"Group: {group.name}")
 
         # Calculate total count for "more" message
         total_count = self.get_channel_count(obj)
@@ -98,13 +111,15 @@ class StreamSerializer(serializers.ModelSerializer):
         allow_null=True,
         validators=[validate_flexible_url]
     )
+    m3u_account_name = serializers.SerializerMethodField()
+    xtream_account_name = serializers.SerializerMethodField()
     stream_profile_id = serializers.PrimaryKeyRelatedField(
         queryset=StreamProfile.objects.all(),
         source="stream_profile",
         allow_null=True,
         required=False,
     )
-    read_only_fields = ["is_custom", "m3u_account", "stream_hash", "stream_id", "stream_chno"]
+    read_only_fields = ["is_custom", "m3u_account", "xtream_account", "stream_hash", "stream_id", "stream_chno"]
 
     class Meta:
         model = Stream
@@ -112,7 +127,10 @@ class StreamSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "url",
-            "m3u_account",  # Uncomment if using M3U fields
+            "m3u_account",
+            "m3u_account_name",
+            "xtream_account",
+            "xtream_account_name",
             "logo_url",
             "tvg_id",
             "local_file",
@@ -129,7 +147,18 @@ class StreamSerializer(serializers.ModelSerializer):
             "stream_stats_updated_at",
             "stream_id",
             "stream_chno",
+            "custom_properties",
         ]
+
+    def get_m3u_account_name(self, obj):
+        if obj.m3u_account:
+            return obj.m3u_account.name
+        return None
+
+    def get_xtream_account_name(self, obj):
+        if obj.xtream_account:
+            return obj.xtream_account.name
+        return None
 
     def get_fields(self):
         fields = super().get_fields()
@@ -137,13 +166,14 @@ class StreamSerializer(serializers.ModelSerializer):
         # Unable to edit specific properties if this stream was created from an M3U account
         if (
             self.instance
-            and getattr(self.instance, "m3u_account", None)
+            and (getattr(self.instance, "m3u_account", None) or getattr(self.instance, "xtream_account", None))
             and not self.instance.is_custom
         ):
             fields["id"].read_only = True
             fields["name"].read_only = True
             fields["url"].read_only = True
             fields["m3u_account"].read_only = True
+            fields["xtream_account"].read_only = True
             fields["tvg_id"].read_only = True
             fields["channel_group"].read_only = True
 
@@ -182,39 +212,47 @@ class ChannelGroupM3UAccountSerializer(serializers.ModelSerializer):
 #
 # Channel Group
 #
-class ChannelGroupSerializer(serializers.ModelSerializer):
-    channel_count = serializers.SerializerMethodField()
-    m3u_account_count = serializers.SerializerMethodField()
-    m3u_accounts = ChannelGroupM3UAccountSerializer(
-        many=True,
-        read_only=True
-    )
-
-    class Meta:
-        model = ChannelGroup
-        fields = ["id", "name", "channel_count", "m3u_account_count", "m3u_accounts"]
-
-    def get_channel_count(self, obj):
-        """Get count of channels in this group"""
-        return obj.channels.count()
-
-    def get_m3u_account_count(self, obj):
-        """Get count of M3U accounts associated with this group"""
-        return obj.m3u_accounts.count()
-
 
 class ChannelProfileSerializer(serializers.ModelSerializer):
     channels = serializers.SerializerMethodField()
+    profile_groups = serializers.SerializerMethodField()
 
     class Meta:
         model = ChannelProfile
-        fields = ["id", "name", "channels"]
+        fields = ["id", "name", "channels", "profile_groups"]
 
     def get_channels(self, obj):
         memberships = ChannelProfileMembership.objects.filter(
             channel_profile=obj, enabled=True
         )
         return [membership.channel.id for membership in memberships]
+
+    def get_profile_groups(self, obj):
+        """Return profile group associations for this profile."""
+        pgs = ProfileGroup.objects.filter(profile=obj).select_related('channel_group').order_by('order', 'channel_group__name')
+        return [
+            {
+                'id': pg.id,
+                'channel_group_id': pg.channel_group_id,
+                'channel_group_name': pg.channel_group.name,
+                'order': pg.order,
+                'is_active': pg.is_active,
+                'channel_count': Channel.objects.filter(
+                    channel_group_id=pg.channel_group_id,
+                    channelprofilemembership__channel_profile=obj,
+                    channelprofilemembership__enabled=True
+                ).count()
+            }
+            for pg in pgs
+        ]
+
+
+class ProfileGroupSerializer(serializers.ModelSerializer):
+    channel_group_name = serializers.CharField(source='channel_group.name', read_only=True)
+
+    class Meta:
+        model = ProfileGroup
+        fields = ['id', 'profile', 'channel_group', 'channel_group_name', 'order', 'is_active']
 
 
 class ChannelProfileMembershipSerializer(serializers.ModelSerializer):
@@ -279,6 +317,8 @@ class ChannelSerializer(serializers.ModelSerializer):
         required=False,
     )
 
+    logo = serializers.SerializerMethodField()
+    logo_cache_url = serializers.SerializerMethodField()
     auto_created_by_name = serializers.SerializerMethodField()
 
     class Meta:
@@ -295,12 +335,17 @@ class ChannelSerializer(serializers.ModelSerializer):
             "stream_profile_id",
             "uuid",
             "logo_id",
+            "logo",
+            "logo_cache_url",
             "user_level",
             "is_adult",
             "auto_created",
             "auto_created_by",
             "auto_created_by_name",
+            "sort_order",
+            "is_hidden",
         ]
+
 
     def to_representation(self, instance):
         include_streams = self.context.get("include_streams", False)
@@ -309,14 +354,26 @@ class ChannelSerializer(serializers.ModelSerializer):
             self.fields["streams"] = serializers.SerializerMethodField()
             return super().to_representation(instance)
         else:
-            # Fix: For PATCH/PUT responses, ensure streams are ordered
             representation = super().to_representation(instance)
             if "streams" in representation:
-                representation["streams"] = list(
-                    instance.streams.all()
-                    .order_by("channelstream__order")
-                    .values_list("id", flat=True)
-                )
+                # Use the through model's related name more safely
+                try:
+                    stream_ids = []
+                    if hasattr(instance, 'channelstream_set'):
+                        stream_ids = list(
+                            instance.channelstream_set.all()
+                            .order_by("order")
+                            .values_list("stream_id", flat=True)
+                        )
+                    elif hasattr(instance, 'streams'):
+                        # Fallback to direct streams if through model access fails
+                        stream_ids = list(instance.streams.all().values_list("id", flat=True))
+                    
+                    representation["streams"] = stream_ids
+                except Exception as e:
+                    # Log but don't crash serialization if ordering fails
+                    logger.error(f"Error serializing streams for channel {instance.id}: {e}")
+                    representation["streams"] = []
             return representation
 
     def get_logo(self, obj):
@@ -337,7 +394,6 @@ class ChannelSerializer(serializers.ModelSerializer):
 
         # Auto-assign Default Group if no channel_group is specified
         if "channel_group" not in validated_data or validated_data.get("channel_group") is None:
-            from apps.channels.models import ChannelGroup
             default_group, _ = ChannelGroup.objects.get_or_create(name="Default Group")
             validated_data["channel_group"] = default_group
 
@@ -345,8 +401,10 @@ class ChannelSerializer(serializers.ModelSerializer):
 
         # Add streams in the specified order
         for index, stream in enumerate(streams):
+            # Handle both Stream objects and stream IDs
+            sid = stream.id if hasattr(stream, "id") else stream
             ChannelStream.objects.create(
-                channel=channel, stream_id=stream.id, order=index
+                channel=channel, stream_id=sid, order=index
             )
 
         return channel
@@ -419,6 +477,60 @@ class ChannelSerializer(serializers.ModelSerializer):
         if obj.auto_created_by:
             return obj.auto_created_by.name
         return None
+
+    def get_logo_cache_url(self, obj):
+        """Get the cache URL for the channel's logo."""
+        if obj.logo:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(
+                    reverse("api:channels:logo-cache", args=[obj.logo.id])
+                )
+            return reverse("api:channels:logo-cache", args=[obj.logo.id])
+        return None
+
+
+class ChannelGroupSerializer(serializers.ModelSerializer):
+    channel_count = serializers.SerializerMethodField()
+    m3u_account_count = serializers.SerializerMethodField()
+    m3u_accounts = ChannelGroupM3UAccountSerializer(
+        many=True,
+        read_only=True
+    )
+    image_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ChannelGroup
+        fields = [
+            "id",
+            "name",
+            "channel_count",
+            "m3u_account_count",
+            "m3u_accounts",
+            "image",
+            "image_url",
+            "sort_mode",
+            "sort_field"
+        ]
+
+    def get_channel_count(self, obj):
+        """Get count of channels in this group"""
+        return obj.channels.count()
+
+    def get_m3u_account_count(self, obj):
+        """Get count of M3U accounts associated with this group"""
+        return obj.m3u_accounts.count()
+
+    def get_image_url(self, obj):
+        if obj.image and obj.image.id:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(
+                    reverse("api:channels:logo-cache", args=[obj.image.id])
+                )
+            return reverse("api:channels:logo-cache", args=[obj.image.id])
+        return None
+
 
 
 class RecordingSerializer(serializers.ModelSerializer):

@@ -24,7 +24,7 @@ class IsAdmin(Authenticated):
         if not super().has_permission(request, view):
             return False
 
-        return request.user.user_level >= 10
+        return request.user.user_level >= User.UserLevel.ADMIN
 
 
 class IsOwnerOfObject(Authenticated):
@@ -32,10 +32,16 @@ class IsOwnerOfObject(Authenticated):
         if not super().has_permission(request, view):
             return False
 
-        is_admin = IsAdmin().has_permission(request, view)
-        is_owner = request.user in obj.users.all()
+        if request.user.user_level >= User.UserLevel.ADMIN:
+            return True
 
-        return is_admin or is_owner
+        # Handle User object ownership
+        if isinstance(obj, User):
+            return obj == request.user
+
+        is_owner = hasattr(obj, "users") and request.user in obj.users.all()
+
+        return is_owner
 
 
 permission_classes_by_action = {

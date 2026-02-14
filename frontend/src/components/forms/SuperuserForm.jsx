@@ -21,6 +21,7 @@ function SuperuserForm() {
     username: '',
     password: '',
     email: '',
+    xc_password: '',
   });
   const [error, setError] = useState('');
   const setSuperuserExists = useAuthStore((s) => s.setSuperuserExists);
@@ -47,6 +48,7 @@ function SuperuserForm() {
         username: formData.username,
         password: formData.password,
         email: formData.email,
+        xc_password: formData.xc_password,
       });
       if (response.superuser_exists) {
         setSuperuserExists(true);
@@ -112,6 +114,24 @@ function SuperuserForm() {
               name="email"
               value={formData.email}
               onChange={handleChange}
+            />
+
+            <TextInput
+              label="XC Password (optional)"
+              description="Used for Xtream Codes API access"
+              name="xc_password"
+              value={formData.xc_password}
+              onChange={handleChange}
+              rightSection={
+                <Button
+                  variant="subtle"
+                  size="compact-xs"
+                  onClick={() => setFormData(prev => ({ ...prev, xc_password: Math.random().toString(36).slice(2) }))}
+                >
+                  Generate
+                </Button>
+              }
+              rightSectionWidth={70}
             />
 
             <Button type="submit" fullWidth>

@@ -30,6 +30,36 @@ def get_total_viewers(channel_id):
 
 class ChannelGroup(models.Model):
     name = models.TextField(unique=True, db_index=True)
+    image = models.ForeignKey(
+        'Logo',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='groups',
+        help_text="Custom image for the group (optional)"
+    )
+    sort_mode = models.CharField(
+        max_length=20,
+        choices=[
+            ('manual', 'Manual Order'),
+            ('auto', 'Auto Sort')
+        ],
+        default='auto',
+        help_text="How channels in this group are ordered"
+    )
+    sort_field = models.CharField(
+        max_length=50,
+        choices=[
+            ('channel_number_asc', 'Channel Number (Ascending)'),
+            ('channel_number_desc', 'Channel Number (Descending)'),
+            ('name_asc', 'Name (A-Z)'),
+            ('name_desc', 'Name (Z-A)'),
+        ],
+        default='name_asc',
+        null=True,
+        blank=True,
+        help_text="Field to sort by when sort_mode is 'auto'"
+    )
 
     def related_channels(self):
         # local import if needed to avoid cyc. Usually fine in a single file though
@@ -62,6 +92,14 @@ class Stream(models.Model):
         null=True,
         blank=True,
         related_name="streams",
+    )
+    xtream_account = models.ForeignKey(
+        "xtream.XtreamAccount",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="streams",
+        help_text="Associated Xtream Code Account",
     )
     logo_url = models.TextField(blank=True, null=True)
     tvg_id = models.CharField(max_length=255, blank=True, null=True)
@@ -143,25 +181,36 @@ class Stream(models.Model):
 
     @classmethod
     def generate_hash_key(cls, name, url, tvg_id, keys=None, m3u_id=None, group=None,
-                          account_type=None, stream_id=None):
+                          account_type=None, stream_id=None, xtream_id=None):
         if keys is None:
             keys = CoreSettings.get_m3u_hash_key().split(",")
 
         # For XC accounts, use stream_id instead of url when 'url' is in the hash keys
         # This ensures credential/URL changes don't break stream identity
         effective_url = url
-        use_stream_id = account_type == 'XC' and stream_id and 'url' in keys
+        # Check for both 'XC' (legacy/M3U) and new 'XTREAM' account types
+        use_stream_id = (account_type in ['XC', 'XTREAM']) and stream_id and 'url' in keys
         if use_stream_id:
             effective_url = stream_id
 
-        stream_parts = {"name": name, "url": effective_url, "tvg_id": tvg_id, "m3u_id": m3u_id, "group": group}
+        stream_parts = {
+            "name": name, 
+            "url": effective_url, 
+            "tvg_id": tvg_id, 
+            "m3u_id": m3u_id, 
+            "group": group,
+            "xtream_id": xtream_id
+        }
 
         hash_parts = {key: stream_parts[key] for key in keys if key in stream_parts}
 
-        # When using stream_id instead of URL, we MUST include m3u_id to prevent
-        # collisions across different XC accounts (stream_id is only unique per account)
-        if use_stream_id and 'm3u_id' not in hash_parts:
-            hash_parts['m3u_id'] = m3u_id
+        # When using stream_id instead of URL, we MUST include account ID to prevent
+        # collisions across different accounts
+        if use_stream_id:
+            if m3u_id and 'm3u_id' not in hash_parts:
+                hash_parts['m3u_id'] = m3u_id
+            if xtream_id and 'xtream_id' not in hash_parts:
+                hash_parts['xtream_id'] = xtream_id
 
         # Serialize and hash the dictionary
         serialized_obj = json.dumps(
@@ -202,6 +251,31 @@ class Stream(models.Model):
 
         return stream_profile
 
+    def delete(self, *args, **kwargs):
+        """
+        Override delete to remove this stream from channels and delete channels
+        that become empty (have no streams) after removal.
+        """
+        # Get all channels using this stream before deletion
+        from django.db.models import Count
+        
+        channels_with_this_stream = list(self.channels.all())
+        
+        # Perform the actual stream deletion
+        result = super().delete(*args, **kwargs)
+        
+        # Check each channel and delete if it has no streams left
+        for channel in channels_with_this_stream:
+            # Refresh from DB to get current stream count
+            channel.refresh_from_db()
+            stream_count = channel.streams.count()
+            
+            if stream_count == 0:
+                channel.delete()
+        
+        return result
+
+
     def get_stream(self):
         """
         Finds an available stream for the requested channel and returns the selected stream and profile.
@@ -212,8 +286,41 @@ class Stream(models.Model):
             profile_id = int(profile_id)
             return self.id, profile_id, None
 
+        if self.xtream_account:
+             xtream_account = self.xtream_account
+             if not xtream_account.is_active:
+                  return None, None, None
+
+             # Simple connection check based on max_streams
+             if xtream_account.max_streams > 0:
+                 # Check current connections in Redis
+                 # We need a key for the account connections
+                 # Assuming reuse of profile-like keys or a new key structure
+                 account_connections_key = f"xtream_account_connections:{xtream_account.id}"
+                 current_connections = int(redis_client.get(account_connections_key) or 0)
+                 
+                 if current_connections >= xtream_account.max_streams:
+                      return None, None, "Xtream Account stream limit reached"
+                 
+                 # Increment connection count
+                 redis_client.incr(account_connections_key)
+            
+             # Start stream
+             redis_client.set(f"channel_stream:{self.id}", self.id)
+             # We store 0 or a dummy value for profile if none exists, or just don't set it if not used by Profile logic
+             # But release_stream tries to read profile_id. 
+             # We should probably handle release_stream logic for Xtream accounts too.
+             # For now, let's mark it as profile -1 to indicate Xtream direct?
+             redis_client.set(f"stream_profile:{self.id}", -1) 
+             
+             return self.id, -1, None
+
+
         # Retrieve the M3U account associated with the stream.
         m3u_account = self.m3u_account
+        if not m3u_account:
+            return None, None, None
+            
         m3u_profiles = m3u_account.profiles.all()
         default_profile = next((obj for obj in m3u_profiles if obj.is_default), None)
         profiles = [default_profile] + [
@@ -266,6 +373,17 @@ class Stream(models.Model):
         redis_client.delete(f"stream_profile:{stream_id}")  # Remove profile association
 
         profile_id = int(profile_id)
+        
+        # Handle Xtream Account release (encoded as -1)
+        if profile_id == -1:
+             if self.xtream_account and self.xtream_account.max_streams > 0:
+                  account_connections_key = f"xtream_account_connections:{self.xtream_account.id}"
+                  current = int(redis_client.get(account_connections_key) or 0)
+                  if current > 0:
+                       redis_client.decr(account_connections_key)
+             logger.debug(f"Released Xtream stream {stream_id}")
+             return
+
         logger.debug(
             f"Found profile ID {profile_id} associated with stream {stream_id}"
         )
@@ -301,7 +419,7 @@ class Channel(models.Model):
 
     channel_group = models.ForeignKey(
         "ChannelGroup",
-        on_delete=models.SET_NULL,
+        on_delete=models.CASCADE,
         null=True,
         blank=True,
         related_name="channels",
@@ -359,6 +477,33 @@ class Channel(models.Model):
         auto_now=True,
         help_text="Timestamp when this channel was last updated"
     )
+
+    sort_order = models.IntegerField(
+        default=0,
+        db_index=True,
+        help_text="Manual sort order within the channel group (used when group sort_mode is 'manual')"
+    )
+
+    is_hidden = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Whether this channel is hidden from the outgoing feed (M3U/Xtream)"
+    )
+
+
+    def save(self, *args, **kwargs):
+        # Auto-assign sort_order for new channels in manually-sorted groups
+        if not self.pk and self.channel_group_id:
+            try:
+                group = ChannelGroup.objects.get(pk=self.channel_group_id)
+                if group.sort_mode == 'manual':
+                    max_order = Channel.objects.filter(
+                        channel_group_id=self.channel_group_id
+                    ).aggregate(models.Max('sort_order'))['sort_order__max']
+                    self.sort_order = (max_order or 0) + 1
+            except ChannelGroup.DoesNotExist:
+                pass
+        super().save(*args, **kwargs)
 
     def clean(self):
         # Enforce unique channel_number within a given group
@@ -585,7 +730,18 @@ class Channel(models.Model):
 
 
 class ChannelProfile(models.Model):
-    name = models.CharField(max_length=100, unique=True)
+    name = models.CharField(max_length=255)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='created_channel_profiles',
+        null=True,
+        blank=True,
+        help_text="User who created this profile (for permission tracking)"
+    )
+
+    class Meta:
+        unique_together = ("created_by", "name")
 
 
 class ChannelProfileMembership(models.Model):
@@ -597,6 +753,40 @@ class ChannelProfileMembership(models.Model):
 
     class Meta:
         unique_together = ("channel_profile", "channel")
+
+
+class ProfileGroup(models.Model):
+    """
+    Links a ChannelProfile to a ChannelGroup.
+    Groups in this table are the ones shown in the organizer's left panel
+    for a specific profile. Source/M3U groups not linked here only appear
+    in the stream library (right panel).
+    """
+    profile = models.ForeignKey(
+        ChannelProfile,
+        on_delete=models.CASCADE,
+        related_name='profile_groups',
+    )
+    channel_group = models.ForeignKey(
+        ChannelGroup,
+        on_delete=models.CASCADE,
+        related_name='profile_groups',
+    )
+    order = models.PositiveIntegerField(
+        default=0,
+        help_text="Display order of this group within the profile"
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Whether this group is active/visible in the profile"
+    )
+
+    class Meta:
+        unique_together = ("profile", "channel_group")
+        ordering = ["order"]
+
+    def __str__(self):
+        return f"{self.profile.name} - {self.channel_group.name} (order={self.order}, active={self.is_active})"
 
 
 class ChannelStream(models.Model):
@@ -652,6 +842,7 @@ class ChannelGroupM3UAccount(models.Model):
 class Logo(models.Model):
     name = models.CharField(max_length=255)
     url = models.TextField(unique=True)
+    file_hash = models.CharField(max_length=64, null=True, blank=True, db_index=True, help_text="SHA256 hash of file content for deduplication")
 
     def __str__(self):
         return self.name

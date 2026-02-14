@@ -6,7 +6,7 @@ import useChannelsStore from '../../store/channels';
 import API from '../../api';
 import useStreamProfilesStore from '../../store/streamProfiles';
 import useStreamsStore from '../../store/streams';
-import ChannelGroupForm from './ChannelGroup';
+
 import usePlaylistsStore from '../../store/playlists';
 import logo from '../../images/logo.png';
 import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
@@ -35,7 +35,7 @@ import {
   Switch,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { ListOrdered, SquarePlus, SquareX, X, Zap } from 'lucide-react';
+import { ListOrdered, SquareX, X, Zap } from 'lucide-react';
 import useEPGsStore from '../../store/epgs';
 
 import { FixedSizeList as List } from 'react-window';
@@ -43,7 +43,6 @@ import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 
 const validationSchema = Yup.object({
   name: Yup.string().required('Name is required'),
-  channel_group_id: Yup.string().required('Channel group is required'),
 });
 
 const ChannelForm = ({ channel = null, isOpen, onClose }) => {
@@ -51,10 +50,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
   const listRef = useRef(null);
   const logoListRef = useRef(null);
-  const groupListRef = useRef(null);
 
-  const channelGroups = useChannelsStore((s) => s.channelGroups);
-  const canEditChannelGroup = useChannelsStore((s) => s.canEditChannelGroup);
 
   const {
     logos: channelLogos,
@@ -78,17 +74,12 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
 
   const [logoModalOpen, setLogoModalOpen] = useState(false);
   const [channelStreams, setChannelStreams] = useState([]);
-  const [channelGroupModelOpen, setChannelGroupModalOpen] = useState(false);
   const [epgPopoverOpened, setEpgPopoverOpened] = useState(false);
   const [logoPopoverOpened, setLogoPopoverOpened] = useState(false);
   const [selectedEPG, setSelectedEPG] = useState('');
   const [tvgFilter, setTvgFilter] = useState('');
   const [logoFilter, setLogoFilter] = useState('');
-
-  const [groupPopoverOpened, setGroupPopoverOpened] = useState(false);
-  const [groupFilter, setGroupFilter] = useState('');
   const [autoMatchLoading, setAutoMatchLoading] = useState(false);
-  const groupOptions = Object.values(channelGroups);
 
   const addStream = (stream) => {
     const streamSet = new Set(channelStreams);
@@ -300,13 +291,8 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       name: channel?.name || '',
       channel_number:
         channel?.channel_number !== null &&
-        channel?.channel_number !== undefined
+          channel?.channel_number !== undefined
           ? channel.channel_number
-          : '',
-      channel_group_id: channel?.channel_group_id
-        ? `${channel.channel_group_id}`
-        : Object.keys(channelGroups).length > 0
-          ? Object.keys(channelGroups)[0]
           : '',
       stream_profile_id: channel?.stream_profile_id
         ? `${channel.stream_profile_id}`
@@ -318,7 +304,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       user_level: `${channel?.user_level ?? '0'}`,
       is_adult: channel?.is_adult ?? false,
     }),
-    [channel, channelGroups]
+    [channel]
   );
 
   const {
@@ -429,16 +415,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     return options;
   }, [channelLogos]); // Only depend on channelLogos object
 
-  // Update the handler for when channel group modal is closed
-  const handleChannelGroupModalClose = (newGroup) => {
-    setChannelGroupModalOpen(false);
 
-    // If a new group was created and returned, update the form with it
-    if (newGroup && newGroup.id) {
-      // Preserve all current form values while updating just the channel_group_id
-      setValue('channel_group_id', `${newGroup.id}`);
-    }
-  };
 
   if (!isOpen) {
     return <></>;
@@ -448,17 +425,15 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
     .filter((tvg) => tvg.epg_source == selectedEPG)
     .filter(
       (tvg) =>
-        tvg.name.toLowerCase().includes(tvgFilter.toLowerCase()) ||
-        tvg.tvg_id.toLowerCase().includes(tvgFilter.toLowerCase())
+        (tvg.name || '').toLowerCase().includes(tvgFilter.toLowerCase()) ||
+        (tvg.tvg_id || '').toLowerCase().includes(tvgFilter.toLowerCase())
     );
 
   const filteredLogos = logoOptions.filter((logo) =>
-    logo.name.toLowerCase().includes(logoFilter.toLowerCase())
+    (logo.name || '').toLowerCase().includes(logoFilter.toLowerCase())
   );
 
-  const filteredGroups = groupOptions.filter((group) =>
-    group.name.toLowerCase().includes(groupFilter.toLowerCase())
-  );
+
 
   return (
     <>
@@ -476,7 +451,8 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
       >
         <form onSubmit={handleSubmit(onSubmit)}>
           <Group justify="space-between" align="top">
-            <Stack gap="5" style={{ flex: 1 }}>
+            <Stack gap="5" justify="flex-start" style={{ flex: 1 }}>
+              {/* Channel form fields */}
               <TextInput
                 id="name"
                 name="name"
@@ -502,118 +478,6 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                 size="xs"
                 style={{ flex: 1 }}
               />
-
-              <Flex gap="sm">
-                <Popover
-                  opened={groupPopoverOpened}
-                  onChange={setGroupPopoverOpened}
-                  // position="bottom-start"
-                  withArrow
-                >
-                  <Popover.Target>
-                    <TextInput
-                      id="channel_group_id"
-                      name="channel_group_id"
-                      label="Channel Group"
-                      readOnly
-                      value={
-                        channelGroups[watch('channel_group_id')]
-                          ? channelGroups[watch('channel_group_id')].name
-                          : ''
-                      }
-                      onClick={() => setGroupPopoverOpened(true)}
-                      size="xs"
-                    />
-                  </Popover.Target>
-
-                  <Popover.Dropdown onMouseDown={(e) => e.stopPropagation()}>
-                    <Group>
-                      <TextInput
-                        placeholder="Filter"
-                        value={groupFilter}
-                        onChange={(event) =>
-                          setGroupFilter(event.currentTarget.value)
-                        }
-                        mb="xs"
-                        size="xs"
-                      />
-                    </Group>
-
-                    <ScrollArea style={{ height: 200 }}>
-                      <List
-                        height={200} // Set max height for visible items
-                        itemCount={filteredGroups.length}
-                        itemSize={20} // Adjust row height for each item
-                        width={200}
-                        ref={groupListRef}
-                      >
-                        {({ index, style }) => (
-                          <Box
-                            style={{ ...style, height: 20, overflow: 'hidden' }}
-                          >
-                            <Tooltip
-                              openDelay={500}
-                              label={filteredGroups[index].name}
-                              size="xs"
-                            >
-                              <UnstyledButton
-                                onClick={() => {
-                                  setValue(
-                                    'channel_group_id',
-                                    filteredGroups[index].id
-                                  );
-                                  setGroupPopoverOpened(false);
-                                }}
-                              >
-                                <Text
-                                  size="xs"
-                                  style={{
-                                    whiteSpace: 'nowrap',
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                  }}
-                                >
-                                  {filteredGroups[index].name}
-                                </Text>
-                              </UnstyledButton>
-                            </Tooltip>
-                          </Box>
-                        )}
-                      </List>
-                    </ScrollArea>
-                  </Popover.Dropdown>
-                </Popover>
-
-                {/* <Select
-                  id="channel_group_id"
-                  name="channel_group_id"
-                  label="Channel Group"
-                  value={watch('channel_group_id')}
-                  searchable
-                  onChange={(value) => {
-                    setValue('channel_group_id', value);
-                  }}
-                  error={errors.channel_group_id?.message}
-                  data={Object.values(channelGroups).map((option, index) => ({
-                    value: `${option.id}`,
-                    label: option.name,
-                  }))}
-                  size="xs"
-                  style={{ flex: 1 }}
-                /> */}
-                <Flex align="flex-end">
-                  <ActionIcon
-                    color={theme.tailwind.green[5]}
-                    onClick={() => setChannelGroupModalOpen(true)}
-                    title="Create new group"
-                    size="small"
-                    variant="transparent"
-                    style={{ marginBottom: 5 }}
-                  >
-                    <SquarePlus size="20" />
-                  </ActionIcon>
-                </Flex>
-              </Flex>
 
               <Select
                 id="stream_profile_id"
@@ -1009,10 +873,10 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
                             }}
                           >
                             {filteredTvgs[index].name &&
-                            filteredTvgs[index].tvg_id
+                              filteredTvgs[index].tvg_id
                               ? `${filteredTvgs[index].name} (${filteredTvgs[index].tvg_id})`
                               : filteredTvgs[index].name ||
-                                filteredTvgs[index].tvg_id}
+                              filteredTvgs[index].tvg_id}
                           </Button>
                         </div>
                       )}
@@ -1037,10 +901,7 @@ const ChannelForm = ({ channel = null, isOpen, onClose }) => {
         </form>
       </Modal>
 
-      <ChannelGroupForm
-        isOpen={channelGroupModelOpen}
-        onClose={handleChannelGroupModalClose}
-      />
+
 
       <LogoForm
         isOpen={logoModalOpen}

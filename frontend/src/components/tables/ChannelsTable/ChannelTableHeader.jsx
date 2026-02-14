@@ -6,18 +6,14 @@ import {
   Flex,
   Group,
   Menu,
-  NumberInput,
-  Popover,
   Select,
   Text,
-  TextInput,
   Tooltip,
   useMantineTheme,
 } from '@mantine/core';
 import {
   ArrowDown01,
   Binary,
-  CircleCheck,
   EllipsisVertical,
   SquareMinus,
   SquarePen,
@@ -46,65 +42,7 @@ import useWarningsStore from '../../../store/warnings';
 import ProfileModal, { renderProfileOption } from '../../modals/ProfileModal';
 import EPGMatchModal from '../../modals/EPGMatchModal';
 
-const CreateProfilePopover = React.memo(() => {
-  const [opened, setOpened] = useState(false);
-  const [name, setName] = useState('');
-  const theme = useMantineTheme();
 
-  const authUser = useAuthStore((s) => s.user);
-
-  const setOpen = () => {
-    setName('');
-    setOpened(!opened);
-  };
-
-  const submit = async () => {
-    await API.addChannelProfile({ name });
-    setName('');
-    setOpened(false);
-  };
-
-  return (
-    <Popover
-      opened={opened}
-      onChange={setOpen}
-      position="bottom"
-      withArrow
-      shadow="md"
-    >
-      <Popover.Target>
-        <ActionIcon
-          variant="transparent"
-          color={theme.tailwind.green[5]}
-          onClick={setOpen}
-          disabled={authUser.user_level != USER_LEVELS.ADMIN}
-        >
-          <SquarePlus />
-        </ActionIcon>
-      </Popover.Target>
-
-      <Popover.Dropdown>
-        <Group>
-          <TextInput
-            placeholder="Profile Name"
-            value={name}
-            onChange={(event) => setName(event.currentTarget.value)}
-            size="xs"
-          />
-
-          <ActionIcon
-            variant="transparent"
-            color={theme.tailwind.green[5]}
-            size="sm"
-            onClick={submit}
-          >
-            <CircleCheck />
-          </ActionIcon>
-        </Group>
-      </Popover.Dropdown>
-    </Popover>
-  );
-});
 
 const ChannelTableHeader = ({
   rows,
@@ -143,7 +81,7 @@ const ChannelTableHeader = ({
   const setIsUnlocked = useChannelsTableStore((s) => s.setIsUnlocked);
 
   const headerPinned = table?.headerPinned ?? false;
-  const setHeaderPinned = table?.setHeaderPinned || (() => {});
+  const setHeaderPinned = table?.setHeaderPinned || (() => { });
   const closeAssignChannelNumbersModal = () => {
     setAssignNumbersModalOpen(false);
   };
@@ -233,23 +171,6 @@ const ChannelTableHeader = ({
   return (
     <Group justify="space-between">
       <Group gap={5} style={{ paddingLeft: 10 }}>
-        <Select
-          size="xs"
-          allowDeselect={false}
-          value={selectedProfileId}
-          onChange={setSelectedProfileId}
-          data={Object.values(profiles).map((profile) => ({
-            label: profile.name,
-            value: `${profile.id}`,
-          }))}
-          renderOption={renderModalOption}
-          style={{ minWidth: 190 }}
-        />
-
-        <Tooltip label="Create Profile">
-          <CreateProfilePopover />
-        </Tooltip>
-
         {isUnlocked && (
           <Text
             size="xs"
@@ -278,7 +199,7 @@ const ChannelTableHeader = ({
         <Flex gap={6}>
           <Menu shadow="md" width={200}>
             <Menu.Target>
-              <Button size="xs" variant="default" onClick={() => {}}>
+              <Button size="xs" variant="default" onClick={() => { }}>
                 <Filter size={18} />
               </Button>
             </Menu.Target>

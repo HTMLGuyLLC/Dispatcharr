@@ -37,6 +37,18 @@ export PG_VERSION=$(ls /usr/lib/postgresql/ | sort -V | tail -n 1)
 export PG_BINDIR="/usr/lib/postgresql/${PG_VERSION}/bin"
 export REDIS_HOST=${REDIS_HOST:-localhost}
 export REDIS_PORT=${REDIS_PORT:-6379}
+
+# Log active ports for debugging host-mode conflicts (Synology, etc.)
+echo "🌍 Network Mode Detection:"
+echo "   - Web UI Port: ${DISPATCHARR_PORT}"
+echo "   - PostgreSQL Port: ${POSTGRES_PORT}"
+echo "   - Redis Port: ${REDIS_PORT}"
+
+if [[ "$DISPATCHARR_ENV" == "aio" ]]; then
+    echo "💡 PRO-TIP: If using 'host' network mode, ensure these ports are NOT used by other host services."
+    echo "   (Common conflicts: Postgres=5432, Redis=6379, Dispatcharr=9191)"
+fi
+
 export REDIS_DB=${REDIS_DB:-0}
 export REDIS_PASSWORD=${REDIS_PASSWORD:-}
 export REDIS_USER=${REDIS_USER:-}
@@ -90,6 +102,14 @@ DISPATCHARR_LOG_LEVEL=${DISPATCHARR_LOG_LEVEL:-INFO}
 # Convert to uppercase
 DISPATCHARR_LOG_LEVEL=${DISPATCHARR_LOG_LEVEL^^}
 
+# Set Django/Python defaults if not already present
+export DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-dispatcharr.settings}
+export DISPATCHARR_ENV=${DISPATCHARR_ENV:-aio}
+export DISPATCHARR_DEBUG=${DISPATCHARR_DEBUG:-false}
+export PYTHONUNBUFFERED=${PYTHONUNBUFFERED:-1}
+export PYTHONDONTWRITEBYTECODE=${PYTHONDONTWRITEBYTECODE:-1}
+export VIRTUAL_ENV=${VIRTUAL_ENV:-/dispatcharrpy}
+
 
 echo "Environment DISPATCHARR_LOG_LEVEL set to: '${DISPATCHARR_LOG_LEVEL}'"
 
@@ -106,7 +126,7 @@ if [[ ! -f /etc/profile.d/dispatcharr.sh ]]; then
         PATH VIRTUAL_ENV DJANGO_SETTINGS_MODULE PYTHONUNBUFFERED PYTHONDONTWRITEBYTECODE
         POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_HOST POSTGRES_PORT
         DISPATCHARR_ENV DISPATCHARR_DEBUG DISPATCHARR_LOG_LEVEL
-        REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER POSTGRES_DIR DISPATCHARR_PORT
+        REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER POSTGRES_DIR DISPATCHARR_PORT DAPHNE_PORT DJANGO_SETTINGS_MODULE
         DISPATCHARR_VERSION DISPATCHARR_TIMESTAMP LIBVA_DRIVERS_PATH LIBVA_DRIVER_NAME LD_LIBRARY_PATH
         CELERY_NICE_LEVEL UWSGI_NICE_LEVEL DJANGO_SECRET_KEY
     )
@@ -240,8 +260,14 @@ if [ "$USE_LEGACY_NUMPY" = "true" ]; then
 fi
 
 # Run Django commands as non-root user to prevent permission issues
-su - $POSTGRES_USER -c "cd /app && python manage.py migrate --noinput"
-su - $POSTGRES_USER -c "cd /app && python manage.py collectstatic --noinput"
+# We preserve the critical environment for Django, uWSGI, and its daemons (Daphne/Celery)
+# This list is explicit to avoid issues with su clearing the environment on some systems
+django_env="VIRTUAL_ENV=$VIRTUAL_ENV PATH=$PATH REDIS_PORT=$REDIS_PORT POSTGRES_PORT=$POSTGRES_PORT DISPATCHARR_ENV=$DISPATCHARR_ENV DAPHNE_PORT=$DAPHNE_PORT DJANGO_SETTINGS_MODULE=$DJANGO_SETTINGS_MODULE DISPATCHARR_DEBUG=$DISPATCHARR_DEBUG REDIS_HOST=$REDIS_HOST POSTGRES_HOST=$POSTGRES_HOST SECRET_KEY=$SECRET_KEY DJANGO_SECRET_KEY=$DJANGO_SECRET_KEY"
+
+echo "⚙️  Running database migrations..."
+su $POSTGRES_USER -c "cd /app && env $django_env $VIRTUAL_ENV/bin/python manage.py migrate --noinput"
+echo "⚙️  Collecting static files..."
+su $POSTGRES_USER -c "cd /app && env $django_env $VIRTUAL_ENV/bin/python manage.py collectstatic --noinput"
 
 # Select proper uwsgi config based on environment
 if [ "$DISPATCHARR_ENV" = "dev" ] && [ "$DISPATCHARR_DEBUG" != "true" ]; then
@@ -266,11 +292,9 @@ if [ "$DISPATCHARR_DEBUG" != "true" ]; then
     uwsgi_args+=" --disable-logging"
 fi
 
-# Launch uwsgi with configurable nice level (default: 0 for normal priority)
-# Users can override via UWSGI_NICE_LEVEL environment variable in docker-compose
-# Start with nice as root, then use setpriv to drop privileges to dispatch user
-# This preserves both the nice value and environment variables
-nice -n $UWSGI_NICE_LEVEL su - "$POSTGRES_USER" -c "cd /app && exec $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
+# Launch uwsgi with configurable nice level
+# We ensure the full environment is passed to uWSGI workers and attached daemons
+nice -n $UWSGI_NICE_LEVEL su "$POSTGRES_USER" -c "cd /app && exec env $django_env $VIRTUAL_ENV/bin/uwsgi $uwsgi_args" & uwsgi_pid=$!
 echo "✅ uwsgi started with PID $uwsgi_pid (nice $UWSGI_NICE_LEVEL)"
 pids+=("$uwsgi_pid")
 

@@ -94,7 +94,10 @@ class PluginManager:
         try:
             configs: Optional[Dict[str, PluginConfig]] = None
             try:
-                configs = {c.key: c for c in PluginConfig.objects.all()}
+                if sync_db:
+                    configs = {c.key: c for c in PluginConfig.objects.all()}
+                else:
+                    configs = None
             except Exception:
                 # DB might not be ready; treat all plugins as untrusted
                 configs = None

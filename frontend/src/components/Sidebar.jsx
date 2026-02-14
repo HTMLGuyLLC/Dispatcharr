@@ -5,7 +5,7 @@ import {
   ListOrdered,
   Play,
   Database,
-  SlidersHorizontal,
+  ListChecks,
   LayoutGrid,
   Settings as LucideSettings,
   Copy,
@@ -90,35 +90,60 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const navItems =
     authUser && authUser.user_level == USER_LEVELS.ADMIN
       ? [
+        {
+          label: 'Channels',
+          icon: <ListOrdered size={20} />,
+          path: '/channels',
+          badge: `(${Object.keys(channels).length})`,
+        },
+        {
+          label: 'Profiles',
+          icon: <ListChecks size={20} />,
+          path: '/channels/profiles',
+        },
+        {
+          label: 'VODs',
+          path: '/vods',
+          icon: <Video size={20} />,
+        },
+        {
+          label: 'M3U & EPG Manager',
+          icon: <Play size={20} />,
+          path: '/sources',
+        },
+        { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
+        { label: 'DVR', icon: <Database size={20} />, path: '/dvr' },
+        { label: 'Stats', icon: <ChartLine size={20} />, path: '/stats' },
+        { label: 'Plugins', icon: <PlugZap size={20} />, path: '/plugins' },
+        {
+          label: 'Users',
+          icon: <User size={20} />,
+          path: '/users',
+        },
+        {
+          label: 'Logo Manager',
+          icon: <FileImage size={20} />,
+          path: '/logos',
+        },
+        {
+          label: 'Settings',
+          icon: <LucideSettings size={20} />,
+          path: '/settings',
+        },
+      ]
+      : authUser && authUser.user_level == USER_LEVELS.RESELLER
+        ? [
           {
             label: 'Channels',
             icon: <ListOrdered size={20} />,
             path: '/channels',
             badge: `(${Object.keys(channels).length})`,
           },
-          {
-            label: 'VODs',
-            path: '/vods',
-            icon: <Video size={20} />,
-          },
-          {
-            label: 'M3U & EPG Manager',
-            icon: <Play size={20} />,
-            path: '/sources',
-          },
           { label: 'TV Guide', icon: <LayoutGrid size={20} />, path: '/guide' },
-          { label: 'DVR', icon: <Database size={20} />, path: '/dvr' },
-          { label: 'Stats', icon: <ChartLine size={20} />, path: '/stats' },
-          { label: 'Plugins', icon: <PlugZap size={20} />, path: '/plugins' },
           {
             label: 'Users',
             icon: <User size={20} />,
             path: '/users',
-          },
-          {
-            label: 'Logo Manager',
-            icon: <FileImage size={20} />,
-            path: '/logos',
           },
           {
             label: 'Settings',
@@ -126,7 +151,7 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             path: '/settings',
           },
         ]
-      : [
+        : [
           {
             label: 'Channels',
             icon: <ListOrdered size={20} />,
@@ -263,6 +288,28 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
               />
             )}
 
+            {!collapsed &&
+              authUser &&
+              authUser.user_level === USER_LEVELS.RESELLER && (
+                <Box
+                  style={{
+                    padding: '8px 0',
+                    borderTop: '1px solid #2A2A2E',
+                    borderBottom: '1px solid #2A2A2E',
+                    marginBottom: 5,
+                  }}
+                >
+                  <Group justify="space-between">
+                    <Text size="xs" c="dimmed">
+                      Credits
+                    </Text>
+                    <Text size="sm" fw={600} c="white">
+                      {authUser.credits || 0}
+                    </Text>
+                  </Group>
+                </Box>
+              )}
+
             {!collapsed && authUser && (
               <Group
                 gap="xs"
@@ -286,33 +333,34 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
             )}
           </Stack>
         )}
+
+        {/* Version and Notification */}
+        {!collapsed && (
+          <Group
+            gap="xs"
+            style={{ padding: '0 16px 16px', justifyContent: 'space-between' }}
+          >
+            <Text size="xs" c="dimmed">
+              v{appVersion?.version || '0.0.0'}
+              {appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}
+            </Text>
+            {isAuthenticated && <NotificationCenter />}
+          </Group>
+        )}
+        {collapsed && isAuthenticated && (
+          <Box
+            style={{
+              padding: '0 16px 16px',
+              display: 'flex',
+              justifyContent: 'center',
+            }}
+          >
+            <NotificationCenter />
+          </Box>
+        )}
+
+
       </Box>
-
-      {/* Version and Notification */}
-      {!collapsed && (
-        <Group
-          gap="xs"
-          style={{ padding: '0 16px 16px', justifyContent: 'space-between' }}
-        >
-          <Text size="xs" c="dimmed">
-            v{appVersion?.version || '0.0.0'}
-            {appVersion?.timestamp ? `-${appVersion.timestamp}` : ''}
-          </Text>
-          {isAuthenticated && <NotificationCenter />}
-        </Group>
-      )}
-      {collapsed && isAuthenticated && (
-        <Box
-          style={{
-            padding: '0 16px 16px',
-            display: 'flex',
-            justifyContent: 'center',
-          }}
-        >
-          <NotificationCenter />
-        </Box>
-      )}
-
       <UserForm user={authUser} isOpen={userFormOpen} onClose={closeUserForm} />
     </AppShell.Navbar>
   );

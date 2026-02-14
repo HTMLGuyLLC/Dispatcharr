@@ -39,5 +39,15 @@ class Migration(migrations.Migration):
             name="custom_properties",
             field=models.TextField(blank=True, null=True),
         ),
+        migrations.AddField(
+            model_name='user',
+            name='connection_limit',
+            field=models.PositiveIntegerField(default=1),
+        ),
+        migrations.AddField(
+            model_name='user',
+            name='expires_at',
+            field=models.DateTimeField(blank=True, null=True),
+        ),
         migrations.RunPython(set_user_level_to_10),
     ]

@@ -3,7 +3,7 @@ import useChannelsStore from '../../store/channels';
 import API from '../../api';
 import useStreamProfilesStore from '../../store/streamProfiles';
 import useEPGsStore from '../../store/epgs';
-import ChannelGroupForm from './ChannelGroup';
+
 import {
   Box,
   Button,
@@ -18,14 +18,12 @@ import {
   useMantineTheme,
   Popover,
   ScrollArea,
-  Tooltip,
-  UnstyledButton,
   Center,
   Divider,
   Checkbox,
   Paper,
 } from '@mantine/core';
-import { ListOrdered, SquarePlus, SquareX, X } from 'lucide-react';
+import { ListOrdered, X } from 'lucide-react';
 import { FixedSizeList as List } from 'react-window';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
@@ -39,10 +37,8 @@ import useWarningsStore from '../../store/warnings';
 const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   const theme = useMantineTheme();
 
-  const groupListRef = useRef(null);
   const logoListRef = useRef(null);
 
-  const channelGroups = useChannelsStore((s) => s.channelGroups);
   const {
     logos: channelLogos,
     ensureLogosLoaded,
@@ -58,17 +54,11 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   const tvgs = useEPGsStore((s) => s.tvgs);
   const fetchEPGs = useEPGsStore((s) => s.fetchEPGs);
 
-  const [channelGroupModelOpen, setChannelGroupModalOpen] = useState(false);
-  const [selectedChannelGroup, setSelectedChannelGroup] = useState('-1');
   const [selectedLogoId, setSelectedLogoId] = useState('-1');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [regexFind, setRegexFind] = useState('');
   const [regexReplace, setRegexReplace] = useState('');
   const [selectedDummyEpgId, setSelectedDummyEpgId] = useState(null);
-
-  const [groupPopoverOpened, setGroupPopoverOpened] = useState(false);
-  const [groupFilter, setGroupFilter] = useState('');
-  const groupOptions = Object.values(channelGroups);
 
   const [logoPopoverOpened, setLogoPopoverOpened] = useState(false);
   const [logoFilter, setLogoFilter] = useState('');
@@ -98,7 +88,6 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   const form = useForm({
     mode: 'uncontrolled',
     initialValues: {
-      channel_group: '(no change)',
       logo: '(no change)',
       stream_profile_id: '-1',
       user_level: '-1',
@@ -118,11 +107,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
       );
     }
 
-    // Check channel group
-    if (selectedChannelGroup && selectedChannelGroup !== '-1') {
-      const groupName = channelGroups[selectedChannelGroup]?.name || 'Unknown';
-      changes.push(`• Channel Group: ${groupName}`);
-    }
+
 
     // Check logo
     if (selectedLogoId && selectedLogoId !== '-1') {
@@ -201,12 +186,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
 
     const values = {
       ...form.getValues(),
-    }; // Handle channel group ID - convert to integer if it exists
-    if (selectedChannelGroup && selectedChannelGroup !== '-1') {
-      values.channel_group_id = parseInt(selectedChannelGroup);
-    } else {
-      delete values.channel_group_id;
-    }
+    };
 
     if (selectedLogoId && selectedLogoId !== '-1') {
       if (selectedLogoId === '0') {
@@ -238,9 +218,6 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
     } else if (values.is_adult === 'false') {
       values.is_adult = false;
     }
-
-    // Remove the channel_group field from form values as we use channel_group_id
-    delete values.channel_group;
 
     try {
       const applyRegex = regexFind.trim().length > 0;
@@ -492,22 +469,8 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
   //   // });
   // }, [channelIds, streamProfiles, channelGroups]);
 
-  const handleChannelGroupModalClose = (newGroup) => {
-    setChannelGroupModalOpen(false);
 
-    if (newGroup && newGroup.id) {
-      setSelectedChannelGroup(newGroup.id);
-      form.setValues({
-        channel_group: `${newGroup.name}`,
-      });
-    }
-  };
-  const filteredGroups = [
-    { id: '-1', name: '(no change)' },
-    ...groupOptions.filter((group) =>
-      group.name.toLowerCase().includes(groupFilter.toLowerCase())
-    ),
-  ];
+
 
   const logoOptions = useMemo(() => {
     return [
@@ -632,126 +595,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
                 </Text>
               </Paper>
 
-              <Popover
-                opened={groupPopoverOpened}
-                onChange={setGroupPopoverOpened}
-                // position="bottom-start"
-                withArrow
-              >
-                <Popover.Target>
-                  <Group style={{ width: '100%' }} align="flex-end">
-                    <TextInput
-                      id="channel_group"
-                      name="channel_group"
-                      label="Channel Group"
-                      readOnly
-                      {...form.getInputProps('channel_group')}
-                      key={form.key('channel_group')}
-                      onClick={() => setGroupPopoverOpened(true)}
-                      size="xs"
-                      style={{ flex: 1 }}
-                      rightSection={
-                        form.getValues().channel_group &&
-                        form.getValues().channel_group !== '(no change)' && (
-                          <ActionIcon
-                            size="xs"
-                            variant="subtle"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedChannelGroup('-1');
-                              form.setValues({ channel_group: '(no change)' });
-                            }}
-                          >
-                            <X size={12} />
-                          </ActionIcon>
-                        )
-                      }
-                    />
 
-                    <ActionIcon
-                      color={theme.tailwind.green[5]}
-                      onClick={() => setChannelGroupModalOpen(true)}
-                      title="Create new group"
-                      size="small"
-                      variant="transparent"
-                      style={{ marginBottom: 5 }}
-                    >
-                      <SquarePlus size="20" />
-                    </ActionIcon>
-                  </Group>
-                </Popover.Target>
-
-                <Popover.Dropdown onMouseDown={(e) => e.stopPropagation()}>
-                  <Group style={{ width: '100%' }} spacing="xs">
-                    <TextInput
-                      placeholder="Filter"
-                      value={groupFilter}
-                      onChange={(event) =>
-                        setGroupFilter(event.currentTarget.value)
-                      }
-                      mb="xs"
-                      size="xs"
-                      style={{ flex: 1 }}
-                    />
-
-                    <ActionIcon
-                      color={theme.tailwind.green[5]}
-                      onClick={() => setChannelGroupModalOpen(true)}
-                      title="Create new group"
-                      size="small"
-                      variant="transparent"
-                      style={{ marginBottom: 5 }}
-                    >
-                      <SquarePlus size="20" />
-                    </ActionIcon>
-                  </Group>
-
-                  <ScrollArea style={{ height: 200 }}>
-                    <List
-                      height={200} // Set max height for visible items
-                      itemCount={filteredGroups.length}
-                      itemSize={20} // Adjust row height for each item
-                      width={200}
-                      ref={groupListRef}
-                    >
-                      {({ index, style }) => (
-                        <Box
-                          style={{ ...style, height: 20, overflow: 'hidden' }}
-                        >
-                          <Tooltip
-                            openDelay={500}
-                            label={filteredGroups[index].name}
-                            size="xs"
-                          >
-                            <UnstyledButton
-                              onClick={() => {
-                                setSelectedChannelGroup(
-                                  filteredGroups[index].id
-                                );
-                                form.setValues({
-                                  channel_group: filteredGroups[index].name,
-                                });
-                                setGroupPopoverOpened(false);
-                              }}
-                            >
-                              <Text
-                                size="xs"
-                                style={{
-                                  whiteSpace: 'nowrap',
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                }}
-                              >
-                                {filteredGroups[index].name}
-                              </Text>
-                            </UnstyledButton>
-                          </Tooltip>
-                        </Box>
-                      )}
-                    </List>
-                  </ScrollArea>
-                </Popover.Dropdown>
-              </Popover>
 
               <Group style={{ width: '100%' }} align="flex-end" gap="xs">
                 <Popover
@@ -975,10 +819,7 @@ const ChannelBatchForm = ({ channelIds, isOpen, onClose }) => {
         </form>
       </Modal>
 
-      <ChannelGroupForm
-        isOpen={channelGroupModelOpen}
-        onClose={handleChannelGroupModalClose}
-      />
+
 
       <ConfirmationDialog
         opened={confirmSetNamesOpen}

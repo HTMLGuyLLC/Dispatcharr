@@ -77,6 +77,36 @@ def send_epg_matching_progress(total_channels, matched_channels, current_channel
     except Exception as e:
         logger.warning(f"Failed to send EPG matching progress: {e}")
 
+def send_profile_creation_progress(total, current, message="", stage="creating"):
+    """
+    Send profile creation progress via WebSocket
+    """
+    try:
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            progress_data = {
+                'type': 'profile_creation_progress',
+                'total': total,
+                'current': current,
+                'remaining': total - current,
+                'message': message,
+                'stage': stage,
+                'progress_percent': round(current / total * 100, 1) if total > 0 else 0
+            }
+
+            async_to_sync(channel_layer.group_send)(
+                "updates",
+                {
+                    "type": "update",
+                    "data": {
+                        "type": "profile_creation_progress",
+                        **progress_data
+                    }
+                }
+            )
+    except Exception as e:
+        logger.warning(f"Failed to send profile creation progress: {e}")
+
 # Lazy loading for ML models - only imported/loaded when needed
 _ml_model_cache = {
     'sentence_transformer': None
@@ -2607,7 +2637,7 @@ def prefetch_recording_artwork(recording_id):
 
 
 @shared_task(bind=True)
-def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None, starting_channel_number=None):
+def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None, starting_channel_number=None, channel_group_id=None):
     """
     Asynchronously create channels from a list of stream IDs.
     Provides progress updates via WebSocket.
@@ -2619,6 +2649,7 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
             - None: Use provider channel numbers, then auto-assign from 1
             - 0: Start with lowest available number and increment by 1
             - Other number: Use as starting number for auto-assignment
+        channel_group_id: Optional channel group ID to override stream's native group
     """
     from apps.channels.models import Stream, Channel, ChannelGroup, ChannelProfile, ChannelProfileMembership, Logo
     from apps.epg.models import EPGData
@@ -2630,6 +2661,14 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
     total_streams = len(stream_ids)
     created_channels = []
     errors = []
+
+    # Resolve the override channel group if provided
+    override_channel_group = None
+    if channel_group_id is not None:
+        try:
+            override_channel_group = ChannelGroup.objects.get(pk=channel_group_id)
+        except ChannelGroup.DoesNotExist:
+            logger.warning(f"channel_group_id {channel_group_id} not found, falling back to stream's group")
 
     try:
         # Send initial progress update
@@ -2692,7 +2731,7 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
             for stream in batch_streams:
                 try:
                     name = stream.name
-                    channel_group = stream.channel_group
+                    channel_group = override_channel_group if override_channel_group else stream.channel_group
                     stream_custom_props = stream.custom_properties or {}
 
                     # Determine channel number based on starting_channel_number mode
@@ -2727,10 +2766,13 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
 
                     channel_data = {
                         "channel_number": channel_number,
-                        "name": name,
+                        "name": stream.name or stream.tvg_id or f"Stream {stream.id}",
                         "tvc_guide_stationid": tvc_guide_stationid,
                         "tvg_id": stream.tvg_id,
-                        "is_adult": stream.is_adult,
+                        "is_adult": stream.is_adult or False,
+                        "is_hidden": False,
+                        "sort_order": 0,
+                        "auto_created": False,
                     }
 
                     # Only add channel_group_id if the stream has a channel group
@@ -2755,7 +2797,7 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
                         logos_to_create.append(
                             Logo(
                                 url=validated_logo_url,
-                                name=stream.name or stream.tvg_id,
+                                name=stream.name or stream.tvg_id or "Logo",
                             )
                         )
                         logo_map.append(validated_logo_url)
@@ -2828,10 +2870,24 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
                     # Semantics:
                     # - None: add to ALL profiles (backward compatible default)
                     # - Empty array []: add to NO profiles
-                    # - Sentinel [0] or 0 in array: add to ALL profiles (explicit)
+                    # - Sentinel [0] or 0: add to ALL profiles (explicit)
                     # - [1,2,...]: add to specified profile IDs only
-                    if profile_ids is None:
-                        # Omitted -> add to all profiles (backward compatible)
+                    
+                    target_profile_ids = None
+                    if profile_ids is not None:
+                        if not isinstance(profile_ids, list):
+                            profile_ids = [profile_ids]
+                        
+                        normalized_ids = []
+                        for pid in profile_ids:
+                            try:
+                                normalized_ids.append(int(pid))
+                            except (ValueError, TypeError, AttributeError):
+                                pass
+                        target_profile_ids = normalized_ids
+
+                    if target_profile_ids is None or 0 in target_profile_ids:
+                        # Add to all profiles
                         all_profiles = ChannelProfile.objects.all()
                         channel_profile_memberships.extend([
                             ChannelProfileMembership(
@@ -2841,24 +2897,10 @@ def bulk_create_channels_from_streams(self, stream_ids, channel_profile_ids=None
                             )
                             for profile in all_profiles
                         ])
-                    elif isinstance(profile_ids, list) and len(profile_ids) == 0:
-                        # Empty array -> add to no profiles
-                        pass
-                    elif isinstance(profile_ids, list) and 0 in profile_ids:
-                        # Sentinel 0 -> add to all profiles (explicit)
-                        all_profiles = ChannelProfile.objects.all()
-                        channel_profile_memberships.extend([
-                            ChannelProfileMembership(
-                                channel_profile=profile,
-                                channel=channel,
-                                enabled=True
-                            )
-                            for profile in all_profiles
-                        ])
-                    else:
-                        # Specific profile IDs
+                    elif len(target_profile_ids) > 0:
+                        # Add to specific profiles
                         try:
-                            specific_profiles = ChannelProfile.objects.filter(id__in=profile_ids)
+                            specific_profiles = ChannelProfile.objects.filter(id__in=target_profile_ids)
                             channel_profile_memberships.extend([
                                 ChannelProfileMembership(
                                     channel_profile=profile,
@@ -3243,3 +3285,169 @@ def set_channels_tvg_ids_from_epg(self, channel_ids):
             'error': str(e)
         })
         raise
+@shared_task
+def create_profile_from_source_task(profile_name, source_ids, user_id, include_channels=True):
+    """
+    Creates a new channel profile and populates it with all groups and channels from the specified sources.
+    Optimized for large sources with thousands of channels.
+    """
+    from django.contrib.auth import get_user_model
+    from django.db import transaction
+    from apps.channels.models import Channel, Stream, ChannelGroup, ChannelProfile, ChannelProfileMembership, ProfileGroup, ChannelStream, Logo
+    from apps.m3u.models import M3UAccount
+    
+    User = get_user_model()
+    try:
+        user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        logger.error(f"User {user_id} not found for create_profile_from_source_task")
+        return {"error": f"User {user_id} not found"}
+
+    try:
+        logger.info(f"Starting profile creation task: '{profile_name}' from sources {source_ids}")
+        send_profile_creation_progress(100, 5, "Initializing profile creation...", stage="starting")
+
+        with transaction.atomic():
+            # 1. Create the profile
+            profile = ChannelProfile.objects.create(name=profile_name, created_by=user)
+            logger.info(f"Created profile ID {profile.id}")
+            
+            # 2. Get all streams from selected sources
+            # We only want active streams from these accounts
+            streams = Stream.objects.filter(m3u_account_id__in=source_ids).select_related('channel_group')
+            total_streams = streams.count()
+            logger.info(f"Found {total_streams} streams across sources {source_ids}")
+            
+            send_profile_creation_progress(total_streams + 10, 10, f"Found {total_streams} streams. Organizing groups...", stage="organizing")
+
+            # 3. Identify unique groups and add them to profile
+            group_ids = streams.values_list('channel_group_id', flat=True).distinct()
+            # Filter out None if any streams don't have a group
+            group_ids = [gid for gid in group_ids if gid is not None]
+            channel_groups = ChannelGroup.objects.filter(id__in=group_ids)
+            
+            profile_groups = []
+            for i, group in enumerate(channel_groups):
+                profile_groups.append(ProfileGroup(
+                    profile=profile,
+                    channel_group=group,
+                    order=i,
+                    is_active=True
+                ))
+            
+            if profile_groups:
+                ProfileGroup.objects.bulk_create(profile_groups)
+                logger.info(f"Added {len(profile_groups)} groups to profile")
+
+            if not include_channels:
+                send_profile_creation_progress(100, 100, f"Profile created with {len(profile_groups)} groups.", stage="completed")
+                return {"success": True, "profile_id": profile.id, "message": f"Created profile {profile.name} with {len(profile_groups)} groups (no channels)."}
+
+            # 4. Handle channels
+            # We want to link every stream to a channel in this profile.
+            # Efficiently find which streams already have a channel.
+            
+            # Use a dictionary for fast lookup: stream_id -> channel
+            stream_to_channel_map = {}
+            
+            # Batch query ChannelStream for all our streams
+            linkings = ChannelStream.objects.filter(stream_id__in=streams.values_list('id', flat=True)).select_related('channel')
+            for link in linkings:
+                # If a stream is linked to multiple channels, we take the first one found
+                if link.stream_id not in stream_to_channel_map:
+                    stream_to_channel_map[link.stream_id] = link.channel
+
+            channels_to_create = []
+            streams_needing_channels = []
+            
+            send_profile_creation_progress(total_streams + 20, 20, "Identifying streams that need new channels...", stage="identifying")
+
+            # Determine starting channel number
+            current_max_chno = Channel.get_next_available_channel_number()
+            
+            # Track used numbers in this batch to avoid internal collisions
+            used_numbers_in_batch = set()
+            
+            for stream in streams:
+                if stream.id not in stream_to_channel_map:
+                    # Construct matching name
+                    name = stream.name or stream.tvg_id or f"Stream {stream.id}"
+                    
+                    # Try to use stream's provider number if available and not already used
+                    chno = stream.stream_chno
+                    if chno is None or chno in used_numbers_in_batch:
+                        chno = current_max_chno
+                        current_max_chno += 1
+                        while chno in used_numbers_in_batch:
+                            chno = current_max_chno
+                            current_max_chno += 1
+                    
+                    used_numbers_in_batch.add(chno)
+                    
+                    new_chan = Channel(
+                        name=name,
+                        channel_number=chno,
+                        channel_group=stream.channel_group,
+                        tvg_id=stream.tvg_id,
+                        is_adult=stream.is_adult,
+                        auto_created=False,
+                        # If a logo exists for the stream, we should probably link it
+                        # But Logo objects are separate, so this needs careful handling in bulk
+                    )
+                    channels_to_create.append(new_chan)
+                    streams_needing_channels.append(stream)
+
+            # Bulk create channels if any
+            if channels_to_create:
+                logger.info(f"Creating {len(channels_to_create)} new channels...")
+                send_profile_creation_progress(total_streams + 50, 50, f"Creating {len(channels_to_create)} new channels in database...", stage="creating_channels")
+                
+                # Using batch_size to prevent memory issues for huge lists
+                created_channels = Channel.objects.bulk_create(channels_to_create, batch_size=500)
+                
+                # Re-link newly created channels to their streams
+                channel_streams_to_create = []
+                for i, chan in enumerate(created_channels):
+                    stream = streams_needing_channels[i]
+                    channel_streams_to_create.append(ChannelStream(
+                        channel=chan,
+                        stream=stream,
+                        order=0
+                    ))
+                    stream_to_channel_map[stream.id] = chan
+                
+                if channel_streams_to_create:
+                    ChannelStream.objects.bulk_create(channel_streams_to_create, batch_size=500)
+                    logger.info(f"Linked {len(channel_streams_to_create)} channels to streams")
+
+            # 5. Create memberships for the profile
+            send_profile_creation_progress(total_streams + 80, 80, "Adding channels to profile...", stage="memberships")
+            
+            memberships = []
+            # Unique channels from all streams mapped
+            all_channels = set(stream_to_channel_map.values())
+            for chan in all_channels:
+                memberships.append(ChannelProfileMembership(
+                    channel_profile=profile,
+                    channel=chan,
+                    enabled=True
+                ))
+            
+            if memberships:
+                logger.info(f"Adding {len(memberships)} channel memberships to profile {profile.id}")
+                ChannelProfileMembership.objects.bulk_create(memberships, ignore_conflicts=True, batch_size=500)
+            
+            send_profile_creation_progress(100, 100, f"Completed! Profile '{profile.name}' created with {len(memberships)} channels.", stage="completed")
+            
+            return {
+                "success": True,
+                "profile_id": profile.id,
+                "profile_name": profile.name,
+                "channel_count": len(memberships),
+                "group_count": len(profile_groups)
+            }
+
+    except Exception as e:
+        logger.exception(f"Error in create_profile_from_source_task: {e}")
+        send_profile_creation_progress(100, 0, f"Error: {str(e)}", stage="error")
+        return {"error": str(e)}

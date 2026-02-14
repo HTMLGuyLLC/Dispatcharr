@@ -38,7 +38,7 @@ const getEpgSettingsFromStore = (settings) => {
   };
 };
 
-const EPGMatchModal = ({ opened, onClose, selectedChannelIds = [] }) => {
+const EPGMatchModal = ({ opened, onClose, onSuccess, selectedChannelIds = [], channelGroup, profileId, scopeLabel }) => {
   const settings = useSettingsStore((s) => s.settings);
 
   const [loading, setLoading] = useState(false);
@@ -76,27 +76,53 @@ const EPGMatchModal = ({ opened, onClose, selectedChannelIds = [] }) => {
       };
       const changedSettings = getChangedSettings(settingsToSave, settings);
       if (Object.keys(changedSettings).length > 0) {
+        console.log('[EPGMatch] Saving changed settings:', changedSettings);
         await saveChangedSettings(settings, changedSettings);
       }
 
       // Then trigger auto-match
+      const options = {};
+      if (channelGroup) options.channelGroup = channelGroup;
+      if (profileId) options.profileId = profileId;
+
+      console.log('[EPGMatch] Starting EPG match with:', {
+        selectedChannelIds,
+        options,
+        scopeLabel
+      });
+
       if (selectedChannelIds.length > 0) {
-        await API.matchEpg(selectedChannelIds);
+        const result = await API.matchEpg(selectedChannelIds, options);
+        console.log('[EPGMatch] Match result for selected channels:', result);
         notifications.show({
           title: `EPG matching started for ${selectedChannelIds.length} selected channel(s)`,
           color: 'green',
         });
+      } else if (channelGroup || profileId) {
+        const result = await API.matchEpg(null, options);
+        console.log('[EPGMatch] Match result for scope:', result);
+        notifications.show({
+          title: `EPG matching started for ${scopeLabel || 'selected scope'}`,
+          color: 'green',
+        });
       } else {
-        await API.matchEpg();
+        const result = await API.matchEpg();
+        console.log('[EPGMatch] Match result for all channels:', result);
         notifications.show({
           title: 'EPG matching started for all channels without EPG',
           color: 'green',
         });
       }
 
+      // Call onSuccess callback to refresh channel data
+      if (onSuccess) {
+        console.log('[EPGMatch] Calling onSuccess callback to refresh channels');
+        onSuccess();
+      }
+
       onClose();
     } catch (error) {
-      console.error('Error during auto-match:', error);
+      console.error('[EPGMatch] Error during auto-match:', error);
       notifications.show({
         title: 'Error',
         message: error.message || 'Failed to start EPG matching',
@@ -108,9 +134,11 @@ const EPGMatchModal = ({ opened, onClose, selectedChannelIds = [] }) => {
   };
 
   const scopeText =
-    selectedChannelIds.length > 0
-      ? `${selectedChannelIds.length} selected channel(s)`
-      : 'all channels without EPG';
+    scopeLabel
+      ? scopeLabel
+      : selectedChannelIds.length > 0
+        ? `${selectedChannelIds.length} selected channel(s)`
+        : 'all channels without EPG';
 
   return (
     <Modal

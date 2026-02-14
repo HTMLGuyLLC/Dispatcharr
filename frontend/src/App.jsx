@@ -8,6 +8,7 @@ import {
 import Sidebar from './components/Sidebar';
 import Login from './pages/Login';
 import Channels from './pages/Channels';
+import ChannelOrganization from './pages/ChannelOrganization';
 import ContentSources from './pages/ContentSources';
 import Guide from './pages/Guide';
 import Stats from './pages/Stats';
@@ -18,7 +19,7 @@ import Users from './pages/Users';
 import LogosPage from './pages/Logos';
 import VODsPage from './pages/VODs';
 import useAuthStore from './store/auth';
-import FloatingVideo from './components/FloatingVideo';
+import SplashScreen from './components/SplashScreen';
 import { WebsocketProvider } from './WebSocket';
 import { Box, AppShell, MantineProvider } from '@mantine/core';
 import '@mantine/core/styles.css'; // Ensure Mantine global styles load
@@ -38,6 +39,7 @@ const defaultRoute = '/channels';
 
 const App = () => {
   const [open, setOpen] = useState(true);
+  const [authCheckComplete, setAuthCheckComplete] = useState(false);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isInitialized = useAuthStore((s) => s.isInitialized);
   const setIsAuthenticated = useAuthStore((s) => s.setIsAuthenticated);
@@ -94,19 +96,24 @@ const App = () => {
       } catch (error) {
         console.error('Auth check failed:', error);
         await logout();
+      } finally {
+        setAuthCheckComplete(true);
       }
     };
 
     checkAuth();
   }, [initializeAuth, initData, logout]);
 
+  if (!authCheckComplete) {
+    return (
+      <MantineProvider defaultColorScheme="dark" theme={mantineTheme}>
+        <SplashScreen />
+      </MantineProvider>
+    );
+  }
+
   return (
-    <MantineProvider
-      defaultColorScheme="dark"
-      theme={mantineTheme}
-      withGlobalStyles
-      withNormalizeCSS
-    >
+    <MantineProvider defaultColorScheme="dark" theme={mantineTheme}>
       <WebsocketProvider>
         <Router>
           <AppShell
@@ -147,6 +154,7 @@ const App = () => {
                     {isAuthenticated && isInitialized ? (
                       <>
                         <Route path="/channels" element={<Channels />} />
+                        <Route path="/channels/profiles" element={<ChannelOrganization />} />
                         <Route path="/sources" element={<ContentSources />} />
                         <Route path="/guide" element={<Guide />} />
                         <Route path="/dvr" element={<DVR />} />
@@ -182,8 +190,6 @@ const App = () => {
           <Notifications containerWidth={350} />
         </Router>
       </WebsocketProvider>
-
-      <FloatingVideo />
     </MantineProvider>
   );
 };

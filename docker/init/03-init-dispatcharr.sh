@@ -30,12 +30,23 @@ if [ "$(id -u)" = "0" ] && [ -d "/app" ]; then
         chown $PUID:$PGID /app
     fi
 fi
-# Configure nginx port
-if ! [[ "$DISPATCHARR_PORT" =~ ^[0-9]+$ ]]; then
-    echo "⚠️  Warning: DISPATCHARR_PORT is not a valid integer, using default port 9191"
-    DISPATCHARR_PORT=9191
-fi
+# Validate ports
+export DAPHNE_PORT=${DAPHNE_PORT:-9192}
+for port_var in DISPATCHARR_PORT POSTGRES_PORT REDIS_PORT DAPHNE_PORT; do
+    if ! [[ "${!port_var}" =~ ^[0-9]+$ ]]; then
+        case $port_var in
+            DISPATCHARR_PORT) default_val=9191 ;;
+            POSTGRES_PORT) default_val=5432 ;;
+            REDIS_PORT) default_val=6379 ;;
+            DAPHNE_PORT) default_val=9192 ;;
+        esac
+        echo "⚠️  Warning: $port_var is not a valid integer (${!port_var}), using default $default_val"
+        export $port_var=$default_val
+    fi
+done
+
 sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
+sed -i "s/DAPHNE_PORT_VAR/${DAPHNE_PORT}/g" /etc/nginx/sites-enabled/default
 
 # Configure nginx based on IPv6 availability
 if ip -6 addr show | grep -q "inet6"; then

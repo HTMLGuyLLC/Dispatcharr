@@ -90,8 +90,19 @@ if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
         fi
     fi
 
-    # Initialize PostgreSQL database
-    if [ -z "$(ls -A $POSTGRES_DIR)" ]; then
+    # Cleanup stale lock files if they exist (common after a crash/restart loop)
+    # We only do this if we are NOT in modular mode (managing our own DB)
+    if [ -f "${POSTGRES_DIR}/postmaster.pid" ]; then
+        # Check if the process mentioned in the pid file is actually running
+        OTHER_PID=$(head -n 1 "${POSTGRES_DIR}/postmaster.pid")
+        if [[ -n "$OTHER_PID" ]] && ! kill -0 "$OTHER_PID" 2>/dev/null; then
+            echo "⚠️  Detected stale PostgreSQL lock file (PID $OTHER_PID is dead), cleaning up..."
+            rm -f "${POSTGRES_DIR}/postmaster.pid"
+        fi
+    fi
+
+    # Initialize PostgreSQL database (if empty)
+    if [ ! -d "$POSTGRES_DIR" ] || [ -z "$(ls -A $POSTGRES_DIR 2>/dev/null)" ]; then
         echo "Initializing PostgreSQL database..."
         mkdir -p $POSTGRES_DIR
         chown -R postgres:postgres $POSTGRES_DIR
@@ -99,6 +110,8 @@ if [[ "$DISPATCHARR_ENV" != "modular" ]]; then
 
         # Initialize PostgreSQL
         su - postgres -c "$PG_BINDIR/initdb -D ${POSTGRES_DIR}"
+
+
         # Configure PostgreSQL
         echo "host all all 0.0.0.0/0 md5" >> "${POSTGRES_DIR}/pg_hba.conf"
         echo "listen_addresses='*'" >> "${POSTGRES_DIR}/postgresql.conf"

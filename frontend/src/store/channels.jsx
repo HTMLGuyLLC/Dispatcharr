@@ -27,13 +27,14 @@ const showNotificationIfNewChannel = (
       const channelId = channelsByUUID[ch.channel_id];
       const channel = channelId ? channels[channelId] : null;
 
-      if (channel) {
-        showNotification({
-          title: 'New channel streaming',
-          message: channel.name,
-          color: 'blue.5',
-        });
-      }
+      // Disabled to reduce notification noise
+      // if (channel) {
+      //   showNotification({
+      //     title: 'New channel streaming',
+      //     message: channel.name,
+      //     color: 'blue.5',
+      //   });
+      // }
     }
   }
 };
@@ -42,11 +43,12 @@ const showNotificationIfNewClient = (currentStats, oldClients, client) => {
   // This check prevents the notifications if streams are active on page load
   if (currentStats.channels) {
     if (oldClients[client.client_id] === undefined) {
-      showNotification({
-        title: 'New client started streaming',
-        message: `Client streaming from ${client.ip_address}`,
-        color: 'blue.5',
-      });
+      // Disabled to reduce notification noise
+      // showNotification({
+      //   title: 'New client started streaming',
+      //   message: `Client streaming from ${client.ip_address}`,
+      //   color: 'blue.5',
+      // });
     }
   }
 };
@@ -66,19 +68,20 @@ const showNotificationIfChannelStopped = (
         const channelId = channelsByUUID[uuid];
         const channel = channelId && channels[channelId];
 
-        if (channel) {
-          showNotification({
-            title: 'Channel streaming stopped',
-            message: channel.name,
-            color: 'blue.5',
-          });
-        } else {
-          showNotification({
-            title: 'Channel streaming stopped',
-            message: `Channel (${uuid})`,
-            color: 'blue.5',
-          });
-        }
+        // Disabled to reduce notification noise
+        // if (channel) {
+        //   showNotification({
+        //     title: 'Channel streaming stopped',
+        //     message: channel.name,
+        //     color: 'blue.5',
+        //   });
+        // } else {
+        //   showNotification({
+        //     title: 'Channel streaming stopped',
+        //     message: `Channel (${uuid})`,
+        //     color: 'blue.5',
+        //   });
+        // }
       }
     }
   }
@@ -92,11 +95,12 @@ const showNotificationIfClientStopped = (
   if (currentStats.channels) {
     for (const clientId in oldClients) {
       if (newClients[clientId] === undefined) {
-        showNotification({
-          title: 'Client stopped streaming',
-          message: `Client stopped streaming from ${oldClients[clientId].ip_address}`,
-          color: 'blue.5',
-        });
+        // Disabled to reduce notification noise
+        // showNotification({
+        //   title: 'Client stopped streaming',
+        //   message: `Client stopped streaming from ${oldClients[clientId].ip_address}`,
+        //   color: 'blue.5',
+        // });
       }
     }
   }
@@ -171,6 +175,7 @@ const useChannelsStore = create((set, get) => ({
           acc[profile.id] = {
             ...profile,
             channels: new Set(profile.channels),
+            profile_groups: profile.profile_groups || [],
           };
           return acc;
         }, defaultProfiles),
@@ -245,12 +250,12 @@ const useChannelsStore = create((set, get) => ({
       return;
     }
 
-    const { channelsByUUID, updatedChannels } = reduceChannels(channels);
+    const { channelsByUUID, channelsByID } = reduceChannels(channels);
 
     set((state) => ({
       channels: {
         ...state.channels,
-        ...updatedChannels,
+        ...channelsByID,
       },
       channelsByUUID: {
         ...state.channelsByUUID,
@@ -307,6 +312,7 @@ const useChannelsStore = create((set, get) => ({
         [profile.id]: {
           ...profile,
           channels: new Set(profile.channels),
+          profile_groups: profile.profile_groups || [],
         },
       },
     })),
@@ -318,6 +324,7 @@ const useChannelsStore = create((set, get) => ({
         [profile.id]: {
           ...profile,
           channels: new Set(profile.channels),
+          profile_groups: profile.profile_groups || [],
         },
       },
     })),
@@ -482,7 +489,7 @@ const useChannelsStore = create((set, get) => ({
         for (const k of Object.keys(next)) {
           try {
             if (String(next[k]?.id) === target) delete next[k];
-          } catch {}
+          } catch { }
         }
         return { recordings: next };
       }

@@ -17,7 +17,7 @@ import API from './api';
 import useSettingsStore from './store/settings';
 import useAuthStore from './store/auth';
 
-export const WebsocketContext = createContext([false, () => {}, null]);
+export const WebsocketContext = createContext([false, () => { }, null]);
 
 export const WebsocketProvider = ({ children }) => {
   const [isReady, setIsReady] = useState(false);
@@ -195,7 +195,7 @@ export const WebsocketProvider = ({ children }) => {
                 });
                 try {
                   await useChannelsStore.getState().fetchRecordings();
-                } catch {}
+                } catch { }
               } else if (status === 'skipped') {
                 notifications.update({
                   id,
@@ -207,7 +207,7 @@ export const WebsocketProvider = ({ children }) => {
                 });
                 try {
                   await useChannelsStore.getState().fetchRecordings();
-                } catch {}
+                } catch { }
               } else if (status === 'error') {
                 notifications.update({
                   id,
@@ -219,7 +219,7 @@ export const WebsocketProvider = ({ children }) => {
                 });
                 try {
                   await useChannelsStore.getState().fetchRecordings();
-                } catch {}
+                } catch { }
               }
               break;
             }
@@ -251,8 +251,8 @@ export const WebsocketProvider = ({ children }) => {
                 const isArray = Array.isArray(currentPlaylists);
                 const playlist = isArray
                   ? currentPlaylists.find(
-                      (p) => p.id === parsedEvent.data.account
-                    )
+                    (p) => p.id === parsedEvent.data.account
+                  )
                   : currentPlaylists[parsedEvent.data.account];
 
                 if (playlist) {
@@ -288,11 +288,66 @@ export const WebsocketProvider = ({ children }) => {
                   // which will trigger a fetchPlaylists() to sync the store.
                   console.log(
                     `Received update for playlist ID ${parsedEvent.data.account} not yet in store. ` +
-                      `Waiting for playlist_created event to sync...`
+                    `Waiting for playlist_created event to sync...`
                   );
                 }
               }
               break;
+
+            case 'profile_creation_progress': {
+              const progress = parsedEvent.data;
+              const id = 'profile-creation-progress';
+
+              console.log('[WebSocket] Profile creation progress:', progress);
+
+              if (progress.stage === 'starting') {
+                notifications.show({
+                  id,
+                  title: 'Creating Profile',
+                  message: progress.message || 'Initializing...',
+                  color: 'blue.5',
+                  autoClose: false,
+                  withCloseButton: false,
+                  loading: true,
+                });
+              } else if (progress.stage === 'completed') {
+                console.log('[WebSocket] Profile creation completed, refreshing data...');
+                notifications.update({
+                  id,
+                  title: 'Profile Created',
+                  message: progress.message || 'Successfully created profile!',
+                  color: 'green.5',
+                  loading: false,
+                  autoClose: 5000,
+                });
+
+                // Refresh all related data
+                fetchChannelProfiles();
+                fetchChannels();
+                fetchChannelGroups();
+              } else if (progress.stage === 'error') {
+                console.error('[WebSocket] Profile creation error:', progress.message);
+                notifications.update({
+                  id,
+                  title: 'Profile Creation Failed',
+                  message: progress.message || 'An error occurred.',
+                  color: 'red.5',
+                  loading: false,
+                  autoClose: 8000,
+                });
+              } else {
+                notifications.update({
+                  id,
+                  title: 'Creating Profile',
+                  message: progress.message || `Processing... (${progress.progress_percent}%)`,
+                  color: 'blue.5',
+                  autoClose: false,
+                  withCloseButton: false,
+                  loading: true,
+                });
+              }
+              break;
+            }
 
             case 'channel_stats':
               setChannelStats(JSON.parse(parsedEvent.data.stats));
@@ -970,6 +1025,8 @@ export const WebsocketProvider = ({ children }) => {
   const fetchEPGs = useEPGsStore((s) => s.fetchEPGs);
   const fetchLogos = useLogosStore((s) => s.fetchAllLogos);
   const fetchChannelProfiles = useChannelsStore((s) => s.fetchChannelProfiles);
+  const fetchChannels = useChannelsStore((s) => s.fetchChannels);
+  const fetchChannelGroups = useChannelsStore((s) => s.fetchChannelGroups);
 
   const ret = useMemo(() => {
     return [isReady, ws.current?.send.bind(ws.current), val];

@@ -53,17 +53,33 @@ if [ -n "$ARCH" ]; then
 	ARCH_ARGS=(--platform "$ARCH")
 fi
 
-echo docker build --build-arg "$BUILD_ARGS" "${ARCH_ARGS[@]}" -t "$IMAGE"
-docker build -f "${SCRIPT_DIR}/Dockerfile" --build-arg "$BUILD_ARGS" "${ARCH_ARGS[@]}" -t "$IMAGE" "$ROOT_DIR"
-docker tag "$IMAGE" "$IMAGE":"$BRANCH"
-docker tag "$IMAGE" "$IMAGE":"$VERSION"
-
-if [ "$PUSH" = "true" ]; then
-	for TAG in latest "$VERSION" "$BRANCH"; do
-		docker tag "$IMAGE" "$REGISTRY/$IMAGE:$TAG"
-		docker push -q "$REGISTRY/$IMAGE:$TAG"
-	done
-	echo "Images pushed successfully."
+# If multiple architectures are specified, we MUST use buildx and we SHOULD push directly
+# since the local docker daemon cannot store multi-platform images in its old image store.
+if [[ -n "$ARCH" && "$ARCH" == *","* ]]; then
+	if [ "$PUSH" = "false" ]; then
+		echo "ERROR: Multi-platform builds (multiple architectures) require pushing to a registry."
+		echo "Please add the -p flag."
+		exit 1
+	fi
+	echo "🚀 Building and Pushing multi-platform image..."
+	docker buildx build -f "${SCRIPT_DIR}/Dockerfile" --build-arg "$BUILD_ARGS" "${ARCH_ARGS[@]}" \
+		-t "$REGISTRY/$IMAGE:latest" \
+		-t "$REGISTRY/$IMAGE:$BRANCH" \
+		-t "$REGISTRY/$IMAGE:$VERSION" \
+		--push "$ROOT_DIR"
 else
-	echo "Please run 'docker push $IMAGE:$BRANCH' and 'docker push $IMAGE:${VERSION}' when ready"
+	# Single architecture build
+	docker build -f "${SCRIPT_DIR}/Dockerfile" --build-arg "$BUILD_ARGS" "${ARCH_ARGS[@]}" -t "$IMAGE" "$ROOT_DIR"
+	docker tag "$IMAGE" "$IMAGE":"$BRANCH"
+	docker tag "$IMAGE" "$IMAGE":"$VERSION"
+
+	if [ "$PUSH" = "true" ]; then
+		for TAG in latest "$VERSION" "$BRANCH"; do
+			docker tag "$IMAGE" "$REGISTRY/$IMAGE:$TAG"
+			docker push -q "$REGISTRY/$IMAGE:$TAG"
+		done
+		echo "Images pushed successfully."
+	else
+		echo "Please run 'docker push $IMAGE:$BRANCH' and 'docker push $IMAGE:${VERSION}' when ready"
+	fi
 fi

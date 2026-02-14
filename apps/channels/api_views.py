@@ -32,8 +32,10 @@ from .models import (
     Logo,
     ChannelProfile,
     ChannelProfileMembership,
+    ProfileGroup,
     Recording,
     RecurringRecordingRule,
+    ChannelStream,
 )
 from .serializers import (
     StreamSerializer,
@@ -43,6 +45,7 @@ from .serializers import (
     ChannelProfileMembershipSerializer,
     BulkChannelProfileMembershipSerializer,
     ChannelProfileSerializer,
+    ProfileGroupSerializer,
     RecordingSerializer,
     RecurringRecordingRuleSerializer,
 )
@@ -54,6 +57,7 @@ from .tasks import (
     match_selected_channels_epg,
     sync_recurring_rule_impl,
     purge_recurring_rule_impl,
+    create_profile_from_source_task,
 )
 import django_filters
 from django_filters.rest_framework import DjangoFilterBackend
@@ -91,7 +95,13 @@ class OrInFilter(django_filters.Filter):
 class StreamPagination(PageNumberPagination):
     page_size = 50  # Default page size to match frontend default
     page_size_query_param = "page_size"  # Allow clients to specify page size
-    max_page_size = 10000  # Prevent excessive page sizes
+    max_page_size = 1000  # Prevent excessive page sizes that cause timeouts
+
+    def paginate_queryset(self, queryset, request, view=None):
+        if not request.query_params.get(self.page_query_param):
+            return None  # disables pagination, returns full queryset
+
+        return super().paginate_queryset(queryset, request, view)
 
 
 class StreamFilter(django_filters.FilterSet):
@@ -106,6 +116,13 @@ class StreamFilter(django_filters.FilterSet):
     m3u_account_is_active = django_filters.BooleanFilter(
         field_name="m3u_account__is_active"
     )
+    xtream_account = django_filters.BaseInFilter(field_name="xtream_account__id")
+    xtream_account_name = django_filters.CharFilter(
+        field_name="xtream_account__name", lookup_expr="icontains"
+    )
+    xtream_account_is_active = django_filters.BooleanFilter(
+        field_name="xtream_account__is_active"
+    )
     tvg_id = django_filters.CharFilter(lookup_expr="icontains")
 
     class Meta:
@@ -116,6 +133,9 @@ class StreamFilter(django_filters.FilterSet):
             "m3u_account",
             "m3u_account_name",
             "m3u_account_is_active",
+            "xtream_account",
+            "xtream_account_name",
+            "xtream_account_is_active",
             "tvg_id",
         ]
 
@@ -144,8 +164,8 @@ class StreamViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
-        # Exclude streams from inactive M3U accounts
-        qs = qs.exclude(m3u_account__is_active=False)
+        # Exclude streams from inactive M3U accounts and inactive Xtream accounts
+        qs = qs.exclude(m3u_account__is_active=False).exclude(xtream_account__is_active=False)
 
         assigned = self.request.query_params.get("assigned")
         if assigned is not None:
@@ -261,6 +281,28 @@ class StreamViewSet(viewsets.ModelViewSet):
             .distinct()
         )
 
+        # For Xtream options
+        params_for_xtream = request.GET.copy()
+        params_for_xtream.pop('xtream_account', None)
+        params_for_xtream.pop('channel_group', None)
+        params_for_xtream.pop('channel_group_name', None)
+
+        request._request.GET = params_for_xtream
+        base_queryset_for_xtream = self.get_queryset()
+
+        xtream_filterset = self.filterset_class(
+            params_for_xtream,
+            queryset=base_queryset_for_xtream
+        )
+        xtream_queryset = xtream_filterset.qs
+
+        xtream_accounts = (
+            xtream_queryset.exclude(xtream_account__isnull=True)
+            .order_by("xtream_account__name")
+            .values("xtream_account__id", "xtream_account__name")
+            .distinct()
+        )
+
         # Restore original params
         request._request.GET = original_params
 
@@ -269,6 +311,10 @@ class StreamViewSet(viewsets.ModelViewSet):
             "m3u_accounts": [
                 {"id": m3u["m3u_account__id"], "name": m3u["m3u_account__name"]}
                 for m3u in m3u_accounts
+            ],
+            "xtream_accounts": [
+                {"id": xc["xtream_account__id"], "name": xc["xtream_account__name"]}
+                for xc in xtream_accounts
             ]
         })
 
@@ -298,6 +344,70 @@ class StreamViewSet(viewsets.ModelViewSet):
         streams = Stream.objects.filter(id__in=ids)
         serializer = self.get_serializer(streams, many=True)
         return Response(serializer.data)
+
+    @extend_schema(
+        methods=["GET"],
+        description="Check if a stream is used in any channels",
+        responses={
+            200: inline_serializer(
+                name="StreamUsageResponse",
+                fields={
+                    "is_used": serializers.BooleanField(),
+                    "channel_count": serializers.IntegerField(),
+                    "channels": serializers.ListField(
+                        child=inline_serializer(
+                            name="ChannelUsageInfo",
+                            fields={
+                                "id": serializers.IntegerField(),
+                                "name": serializers.CharField(),
+                                "channel_number": serializers.IntegerField(),
+                            }
+                        )
+                    ),
+                },
+            )
+        },
+    )
+    @action(detail=True, methods=["get"], url_path="check-usage")
+    def check_usage(self, request, pk=None):
+        """Check if this stream is used in any channels"""
+        stream = self.get_object()
+        
+        # Efficient query to get channels using this stream
+        from django.db.models import Count
+        
+        channels_using_stream = Channel.objects.filter(
+            streams=stream
+        ).annotate(
+            stream_count=Count('streams')
+        ).values('id', 'name', 'channel_number', 'stream_count')[:10]
+        
+        channel_list = list(channels_using_stream)
+        total_count = Channel.objects.filter(streams=stream).count()
+        
+        # Identify channels that will be deleted (only have this one stream)
+        channels_to_delete = Channel.objects.filter(
+            streams=stream
+        ).annotate(
+            stream_count=Count('streams')
+        ).filter(stream_count=1).values('id', 'name', 'channel_number')[:10]
+        
+        channels_to_delete_list = list(channels_to_delete)
+        total_channels_to_delete = Channel.objects.filter(
+            streams=stream
+        ).annotate(
+            stream_count=Count('streams')
+        ).filter(stream_count=1).count()
+        
+        return Response({
+            "is_used": total_count > 0,
+            "channel_count": total_count,
+            "channels": channel_list,
+            "channels_to_delete": channels_to_delete_list,
+            "channels_to_delete_count": total_channels_to_delete,
+        })
+
+
 
 
 # ─────────────────────────────────────────────────────────
@@ -331,17 +441,122 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         return super().update(request, *args, **kwargs)
 
     def partial_update(self, request, *args, **kwargs):
-        """Override partial_update to check M3U associations"""
+        """Override partial_update to check M3U associations.
+        Sort settings (sort_mode, sort_field) are always allowed.
+        """
         instance = self.get_object()
+        sort_only_fields = {'sort_mode', 'sort_field'}
+        request_fields = set(request.data.keys())
 
-        # Check if group has M3U account associations
-        if hasattr(instance, 'm3u_account') and instance.m3u_account.exists():
-            return Response(
-                {"error": "Cannot edit group with M3U account associations"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        # If updating only sort settings, allow it even for M3U-associated groups
+        if not request_fields.issubset(sort_only_fields):
+            if hasattr(instance, 'm3u_account') and instance.m3u_account.exists():
+                return Response(
+                    {"error": "Cannot edit group with M3U account associations (sort settings are allowed)"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
         return super().partial_update(request, *args, **kwargs)
+
+    @extend_schema(
+        request=inline_serializer(
+            'ChannelGroupSetImageRequest',
+            fields={'image_file': serializers.ImageField()}
+        ),
+        responses={200: ChannelGroupSerializer}
+    )
+    @action(detail=True, methods=['post'], url_path='set-image')
+    def set_image(self, request, pk=None):
+        """Upload and set a custom image for the group"""
+        from .models import Logo
+        
+        group = self.get_object()
+        image_file = request.FILES.get('image_file')
+        
+        if not image_file:
+            return Response(
+                {'error': 'image_file is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Create or update Logo entry
+        logo = Logo.objects.create(url=image_file)
+        group.image = logo
+        group.save()
+        
+        serializer = self.get_serializer(group)
+        return Response(serializer.data)
+
+    @extend_schema(responses={200: ChannelGroupSerializer})
+    @action(detail=True, methods=['delete'], url_path='remove-image')
+    def remove_image(self, request, pk=None):
+        """Remove the custom image from the group"""
+        group = self.get_object()
+        group.image = None
+        group.save()
+        
+        serializer = self.get_serializer(group)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='clear-channels')
+    def clear_channels(self, request, pk=None):
+        """Delete all channels belonging to this group."""
+        group = self.get_object()
+        from apps.channels.models import Channel
+        count, _ = Channel.objects.filter(channel_group=group).delete()
+        return Response({'message': f'Cleared {count} channels from group {group.name}'})
+
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                'ChannelGroupStatsResponse',
+                fields={
+                    'groups': serializers.ListField(
+                        child=inline_serializer(
+                            'GroupStats',
+                            fields={
+                                'id': serializers.IntegerField(),
+                                'name': serializers.CharField(),
+                                'channel_count': serializers.IntegerField(),
+                                'epg_coverage_percent': serializers.FloatField(),
+                                'has_stale_channels': serializers.BooleanField()
+                            }
+                        )
+                    )
+                }
+            )
+        }
+    )
+    @action(detail=False, methods=['get'], url_path='stats')
+    def stats(self, request):
+        """Get statistics for all channel groups"""
+        from django.db.models import Count, Q
+        
+        groups = ChannelGroup.objects.annotate(
+            channel_count=Count('channels'),
+            channels_with_epg=Count('channels', filter=Q(channels__epg_data__isnull=False))
+        ).all()
+        
+        stats_data = []
+        for group in groups:
+            epg_coverage = 0
+            if group.channel_count > 0:
+                epg_coverage = (group.channels_with_epg / group.channel_count) * 100
+            
+            # Check for stale channels (simplified - you may have a different stale criteria)
+            has_stale = group.channels.filter(
+                streams__is_stale=True
+            ).exists() if hasattr(group, 'channels') else False
+            
+            stats_data.append({
+                'id': group.id,
+                'name': group.name,
+                'channel_count': group.channel_count,
+                'epg_coverage_percent': round(epg_coverage, 2),
+                'has_stale_channels': has_stale
+            })
+        
+        return Response({'groups': stats_data})
 
     @extend_schema(
         methods=["POST"],
@@ -379,24 +594,72 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
         })
 
     def destroy(self, request, *args, **kwargs):
-        """Override destroy to check for associations before deletion"""
+        """Override destroy to delete associated channels and profile groups before deleting the group"""
         instance = self.get_object()
 
-        # Check if group has associated channels
-        if instance.channels.exists():
+        try:
+            with transaction.atomic():
+                # Delete ProfileGroup associations first (many-to-many through table)
+                profile_group_count = instance.profile_groups.count()
+                if profile_group_count > 0:
+                    logger.info(f"Deleting {profile_group_count} profile group associations for group {instance.name}")
+                    instance.profile_groups.all().delete()
+                
+                # Delete associated channels
+                channel_count = instance.channels.count()
+                if channel_count > 0:
+                    logger.info(f"Deleting {channel_count} channels associated with group {instance.name}")
+                    # Explicitly delete each channel to ensure all related objects are cleaned up
+                    for channel in instance.channels.all():
+                        channel.delete()
+
+                # Now delete the group itself
+                instance.delete()
+                
+                return Response(status=status.HTTP_204_NO_CONTENT)
+        except Exception as e:
+            logger.error(f"Error deleting channel group {instance.name}: {str(e)}")
             return Response(
-                {"error": "Cannot delete group with associated channels"},
+                {"error": f"Failed to delete group: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=True, methods=['post'], url_path='reorder-channels')
+    def reorder_channels(self, request, pk=None):
+        """Set the manual sort_order for channels in this group.
+        Expects: { "channel_ids": [id1, id2, id3, ...] }
+        The order of IDs in the list determines their sort_order (0, 1, 2, ...).
+        Also sets the group's sort_mode to 'manual'.
+        """
+        group = self.get_object()
+        channel_ids = request.data.get('channel_ids', [])
+
+        if not isinstance(channel_ids, list):
+            return Response(
+                {'error': 'channel_ids must be a list of channel IDs'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Check if group has M3U account associations
-        if hasattr(instance, 'm3u_account') and instance.m3u_account.exists():
-            return Response(
-                {"error": "Cannot delete group with M3U account associations"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        with transaction.atomic():
+            # Set group to manual sort mode
+            if group.sort_mode != 'manual':
+                group.sort_mode = 'manual'
+                group.save(update_fields=['sort_mode'])
 
-        return super().destroy(request, *args, **kwargs)
+            # Bulk-update sort_order for each channel
+            channels_to_update = []
+            for order, channel_id in enumerate(channel_ids):
+                channels_to_update.append(
+                    Channel(id=channel_id, sort_order=order)
+                )
+
+            if channels_to_update:
+                Channel.objects.bulk_update(channels_to_update, ['sort_order'], batch_size=500)
+
+        return Response({
+            'message': f'Updated sort order for {len(channel_ids)} channels',
+            'sort_mode': 'manual',
+        })
 
 
 # ─────────────────────────────────────────────────────────
@@ -405,7 +668,7 @@ class ChannelGroupViewSet(viewsets.ModelViewSet):
 class ChannelPagination(PageNumberPagination):
     page_size = 50  # Default page size to match frontend default
     page_size_query_param = "page_size"  # Allow clients to specify page size
-    max_page_size = 10000  # Prevent excessive page sizes
+    max_page_size = 1000  # Prevent excessive page sizes that cause timeouts
 
     def paginate_queryset(self, queryset, request, view=None):
         if not request.query_params.get(self.page_query_param):
@@ -464,6 +727,55 @@ class ChannelViewSet(viewsets.ModelViewSet):
     ordering_fields = ["channel_number", "name", "channel_group__name"]
     ordering = ["-channel_number"]
 
+    def _handle_channel_profile_memberships(self, channel, profile_ids=None):
+        """
+        Helper to assign a channel to profiles based on semantics:
+        - Omitted (None): add to ALL profiles (backward compatible default)
+        - Empty array []: add to NO profiles
+        - Sentinel [0] or 0: add to ALL profiles (explicit)
+        - [1,2,...]: add to specified profile IDs only
+        """
+        if profile_ids is not None:
+            # Normalize single value to list
+            if not isinstance(profile_ids, list):
+                profile_ids = [profile_ids]
+            
+            # Normalize all IDs to integers for consistent comparison
+            # Support both integer 0 and string '0' as sentinel
+            normalized_ids = []
+            for pid in profile_ids:
+                try:
+                    normalized_ids.append(int(pid))
+                except (ValueError, TypeError):
+                    pass
+            profile_ids = normalized_ids
+
+        # Determine action
+        if profile_ids is None or 0 in profile_ids:
+            # Add to all profiles
+            profiles = ChannelProfile.objects.all()
+            ChannelProfileMembership.objects.bulk_create([
+                ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
+                for profile in profiles
+            ])
+        elif len(profile_ids) == 0:
+            # Add to no profiles
+            pass
+        else:
+            # Specific profile IDs
+            channel_profiles = ChannelProfile.objects.filter(id__in=profile_ids)
+            if len(channel_profiles) != len(profile_ids):
+                found_ids = set(channel_profiles.values_list('id', flat=True))
+                missing_ids = set(profile_ids) - found_ids
+                raise serializers.ValidationError(
+                    {"error": f"Channel profiles with IDs {list(missing_ids)} not found"}
+                )
+
+            ChannelProfileMembership.objects.bulk_create([
+                ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
+                for profile in channel_profiles
+            ])
+
     def create(self, request, *args, **kwargs):
         """Override create to handle channel profile membership"""
         serializer = self.get_serializer(data=request.data)
@@ -471,61 +783,10 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
         with transaction.atomic():
             channel = serializer.save()
-
-            # Handle channel profile membership
-            # Semantics:
-            # - Omitted (None): add to ALL profiles (backward compatible default)
-            # - Empty array []: add to NO profiles
-            # - Sentinel [0] or 0: add to ALL profiles (explicit)
-            # - [1,2,...]: add to specified profile IDs only
-            channel_profile_ids = request.data.get("channel_profile_ids")
-            if channel_profile_ids is not None:
-                # Normalize single ID to array
-                if not isinstance(channel_profile_ids, list):
-                    channel_profile_ids = [channel_profile_ids]
-
-            # Determine action based on semantics
-            if channel_profile_ids is None:
-                # Omitted -> add to all profiles (backward compatible)
-                profiles = ChannelProfile.objects.all()
-                ChannelProfileMembership.objects.bulk_create([
-                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
-                    for profile in profiles
-                ])
-            elif isinstance(channel_profile_ids, list) and len(channel_profile_ids) == 0:
-                # Empty array -> add to no profiles
-                pass
-            elif isinstance(channel_profile_ids, list) and 0 in channel_profile_ids:
-                # Sentinel 0 -> add to all profiles (explicit)
-                profiles = ChannelProfile.objects.all()
-                ChannelProfileMembership.objects.bulk_create([
-                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
-                    for profile in profiles
-                ])
-            else:
-                # Specific profile IDs
-                try:
-                    channel_profiles = ChannelProfile.objects.filter(id__in=channel_profile_ids)
-                    if len(channel_profiles) != len(channel_profile_ids):
-                        missing_ids = set(channel_profile_ids) - set(channel_profiles.values_list('id', flat=True))
-                        return Response(
-                            {"error": f"Channel profiles with IDs {list(missing_ids)} not found"},
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-
-                    ChannelProfileMembership.objects.bulk_create([
-                        ChannelProfileMembership(
-                            channel_profile=profile,
-                            channel=channel,
-                            enabled=True
-                        )
-                        for profile in channel_profiles
-                    ])
-                except Exception as e:
-                    return Response(
-                        {"error": f"Error creating profile memberships: {str(e)}"},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+            self._handle_channel_profile_memberships(
+                channel, 
+                request.data.get("channel_profile_ids")
+            )
 
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
@@ -539,6 +800,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "match_epg",
             "set_epg",
             "batch_set_epg",
+            "create_empty",
         ]:
             return [IsAdmin()]
 
@@ -561,9 +823,16 @@ class ChannelViewSet(viewsets.ModelViewSet):
         )
 
         channel_group = self.request.query_params.get("channel_group")
+        group_obj = None
         if channel_group:
             group_names = channel_group.split(",")
             qs = qs.filter(channel_group__name__in=group_names)
+            # If filtering by a single group, apply group-level sort settings
+            if len(group_names) == 1:
+                try:
+                    group_obj = ChannelGroup.objects.get(name=group_names[0])
+                except ChannelGroup.DoesNotExist:
+                    pass
 
         filters = {}
         q_filters = Q()
@@ -591,6 +860,24 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if only_streamless:
             q_filters &= Q(streams__isnull=True)
 
+        only_with_streams = self.request.query_params.get("only_with_streams", None)
+        if only_with_streams:
+            q_filters &= Q(streams__isnull=False)
+
+        has_epg = self.request.query_params.get("has_epg", None)
+        if has_epg is not None:
+            if str(has_epg).lower() in ("1", "true", "yes", "on"):
+                q_filters &= Q(epg_data__isnull=False)
+            else:
+                q_filters &= Q(epg_data__isnull=True)
+
+        is_hidden = self.request.query_params.get("is_hidden", None)
+        if is_hidden is not None and is_hidden != "":
+            if str(is_hidden).lower() in ("1", "true", "yes", "on"):
+                q_filters &= Q(is_hidden=True)
+            else:
+                q_filters &= Q(is_hidden=False)
+
         if self.request.user.user_level < 10:
             filters["user_level__lte"] = self.request.user.user_level
             # Hide adult content if user preference is set
@@ -603,7 +890,41 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if q_filters:
             qs = qs.filter(q_filters)
 
-        return qs.distinct()
+        qs = qs.distinct()
+
+        # Store the resolved group object so filter_queryset() can apply
+        # group-level ordering AFTER DRF's OrderingFilter has run.
+        self._resolved_group = group_obj
+
+        return qs
+
+    def filter_queryset(self, queryset):
+        """Override to apply group-level ordering after all filter backends
+        (including OrderingFilter) have run, so it isn't overridden by the
+        viewset's default ``ordering = ['-channel_number']``.
+        """
+        queryset = super().filter_queryset(queryset)
+
+        group_obj = getattr(self, '_resolved_group', None)
+        if group_obj and not self.request.query_params.get("ordering"):
+            ordering = self._get_group_ordering(group_obj)
+            queryset = queryset.order_by(*ordering)
+
+        return queryset
+
+    @staticmethod
+    def _get_group_ordering(group):
+        """Resolve a ChannelGroup's sort_mode/sort_field into Django ORM ordering."""
+        if group.sort_mode == 'manual':
+            return ['sort_order', 'channel_number']
+
+        sort_field_map = {
+            'channel_number_asc': ['channel_number'],
+            'channel_number_desc': ['-channel_number'],
+            'name_asc': ['name'],
+            'name_desc': ['-name'],
+        }
+        return sort_field_map.get(group.sort_field, ['channel_number'])
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -635,7 +956,12 @@ class ChannelViewSet(viewsets.ModelViewSet):
             if not channel_id:
                 missing_ids.append(f"Item {i}: Channel ID is required")
             else:
-                channel_updates[channel_id] = channel_data
+                try:
+                    # Coerce ID to int to match database dict keys
+                    channel_id_int = int(channel_id)
+                    channel_updates[channel_id_int] = channel_data
+                except (ValueError, TypeError):
+                    missing_ids.append(f"Item {i}: Invalid Channel ID format")
 
         if missing_ids:
             return Response(
@@ -693,7 +1019,12 @@ class ChannelViewSet(viewsets.ModelViewSet):
         # Apply all updates in a transaction
         with transaction.atomic():
             for channel, validated_data in validated_updates:
-                for key, value in validated_data.items():
+                # Remove streams from bulk attribute setting since it's an M2M field
+                # that requires special handling (and bulk_update doesn't support M2M)
+                attrs_to_set = validated_data.copy()
+                attrs_to_set.pop('streams', None)
+                
+                for key, value in attrs_to_set.items():
                     setattr(channel, key, value)
 
             # Single bulk_update query instead of individual saves
@@ -706,11 +1037,14 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
                 # Only call bulk_update if there are fields to update
                 if all_fields:
-                    Channel.objects.bulk_update(
-                        channels_to_update,
-                        fields=list(all_fields),
-                        batch_size=100
-                    )
+                    # Filter out M2M fields for bulk_update
+                    update_fields = [f for f in all_fields if f != 'streams']
+                    if update_fields:
+                        Channel.objects.bulk_update(
+                            channels_to_update,
+                            fields=update_fields,
+                            batch_size=100
+                        )
 
         # Return the updated objects (already in memory)
         serialized_channels = ChannelSerializer(
@@ -868,17 +1202,12 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
     @extend_schema(
         methods=["POST"],
-        description=(
-            "Create a new channel from an existing stream. "
-            "If 'channel_number' is provided, it will be used (if available); "
-            "otherwise, the next available channel number is assigned. "
-            "If 'channel_profile_ids' is provided, the channel will only be added to those profiles. "
-            "Accepts either a single ID or an array of IDs."
-        ),
+        description="Create a new channel from a stream ID.",
         request=inline_serializer(
             name="FromStreamRequest",
             fields={
                 "stream_id": serializers.IntegerField(help_text="ID of the stream to link"),
+                "channel_group_id": serializers.IntegerField(help_text="ID of the group to place the channel in", required=False),
                 "channel_number": serializers.FloatField(
                     help_text="(Optional) Desired channel number. Must not be in use.",
                     required=False,
@@ -895,151 +1224,127 @@ class ChannelViewSet(viewsets.ModelViewSet):
     )
     @action(detail=False, methods=["post"], url_path="from-stream")
     def from_stream(self, request):
-        stream_id = request.data.get("stream_id")
-        if not stream_id:
-            return Response(
-                {"error": "Missing stream_id"}, status=status.HTTP_400_BAD_REQUEST
-            )
-        stream = get_object_or_404(Stream, pk=stream_id)
-        channel_group = stream.channel_group
-
-        name = request.data.get("name")
-
-
-        if name is None:
-            name = stream.name
-
-        # Check if client provided a channel_number; if not, use stream_chno or auto-assign
-        channel_number = request.data.get("channel_number")
-
-        if channel_number is None:
-            # Channel number not provided by client, check stream's channel number or auto-assign
-            if stream.stream_chno is not None:
-                channel_number = stream.stream_chno
-        elif channel_number == 0:
-            # Special case: 0 means ignore provider numbers and auto-assign
-            channel_number = None
-
-        if channel_number is None:
-            # Still None, auto-assign the next available channel number
-            channel_number = Channel.get_next_available_channel_number()
-
-
         try:
-            channel_number = float(channel_number)
-        except ValueError:
-            return Response(
-                {"error": "channel_number must be an integer."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        # If the provided number is already used, return an error.
-        if Channel.objects.filter(channel_number=channel_number).exists():
-            channel_number = Channel.get_next_available_channel_number(channel_number)
-        # Get the tvc_guide_stationid from custom properties if it exists
-        stream_custom_props = stream.custom_properties or {}
-        tvc_guide_stationid = stream_custom_props.get("tvc-guide-stationid")
-
-        channel_data = {
-            "channel_number": channel_number,
-            "name": name,
-            "tvg_id": stream.tvg_id,
-            "tvc_guide_stationid": tvc_guide_stationid,
-            "streams": [stream_id],
-            "is_adult": stream.is_adult,
-        }
-
-        # Only add channel_group_id if the stream has a channel group
-        if channel_group:
-            channel_data["channel_group_id"] = channel_group.id
-
-        if stream.logo_url:
-            # Import validation function
-            from apps.channels.tasks import validate_logo_url
-            validated_logo_url = validate_logo_url(stream.logo_url)
-            if validated_logo_url:
-                logo, _ = Logo.objects.get_or_create(
-                    url=validated_logo_url, defaults={"name": stream.name or stream.tvg_id}
+            stream_id = request.data.get("stream_id")
+            if not stream_id:
+                return Response(
+                    {"error": "Missing stream_id"}, status=status.HTTP_400_BAD_REQUEST
                 )
-                channel_data["logo_id"] = logo.id
+            
+            stream = get_object_or_404(Stream, pk=stream_id)
 
-        # Attempt to find existing EPGs with the same tvg-id
-        epgs = EPGData.objects.filter(tvg_id=stream.tvg_id)
-        if epgs:
-            channel_data["epg_data_id"] = epgs.first().id
-
-        serializer = self.get_serializer(data=channel_data)
-        serializer.is_valid(raise_exception=True)
-
-        with transaction.atomic():
-            channel = serializer.save()
-            channel.streams.add(stream)
-
-            # Handle channel profile membership
-            # Semantics:
-            # - Omitted (None): add to ALL profiles (backward compatible default)
-            # - Empty array []: add to NO profiles
-            # - Sentinel [0] or 0: add to ALL profiles (explicit)
-            # - [1,2,...]: add to specified profile IDs only
-            channel_profile_ids = request.data.get("channel_profile_ids")
-            if channel_profile_ids is not None:
-                # Normalize single ID to array
-                if not isinstance(channel_profile_ids, list):
-                    channel_profile_ids = [channel_profile_ids]
-
-            # Determine action based on semantics
-            if channel_profile_ids is None:
-                # Omitted -> add to all profiles (backward compatible)
-                profiles = ChannelProfile.objects.all()
-                ChannelProfileMembership.objects.bulk_create([
-                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
-                    for profile in profiles
-                ])
-            elif isinstance(channel_profile_ids, list) and len(channel_profile_ids) == 0:
-                # Empty array -> add to no profiles
-                pass
-            elif isinstance(channel_profile_ids, list) and 0 in channel_profile_ids:
-                # Sentinel 0 -> add to all profiles (explicit)
-                profiles = ChannelProfile.objects.all()
-                ChannelProfileMembership.objects.bulk_create([
-                    ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
-                    for profile in profiles
-                ])
+            # Use provided channel_group_id if given, otherwise fall back to stream's group
+            provided_group_id = request.data.get("channel_group_id")
+            channel_group = None
+            if provided_group_id:
+                channel_group = get_object_or_404(ChannelGroup, pk=provided_group_id)
             else:
-                # Specific profile IDs
-                try:
-                    channel_profiles = ChannelProfile.objects.filter(id__in=channel_profile_ids)
-                    if len(channel_profiles) != len(channel_profile_ids):
-                        missing_ids = set(channel_profile_ids) - set(channel_profiles.values_list('id', flat=True))
-                        return Response(
-                            {"error": f"Channel profiles with IDs {list(missing_ids)} not found"},
-                            status=status.HTTP_400_BAD_REQUEST,
+                channel_group = stream.channel_group
+
+            # Determine name with fallbacks
+            name = request.data.get("name")
+            if name is None or name == "":
+                name = stream.name or stream.tvg_id or f"Stream {stream.id}"
+
+            # Check if client provided a channel_number; if not, use stream_chno or auto-assign
+            channel_number = request.data.get("channel_number")
+
+            if channel_number is None:
+                # Channel number not provided by client, check stream's channel number or auto-assign
+                if stream.stream_chno is not None:
+                    channel_number = stream.stream_chno
+            elif channel_number == 0:
+                # Special case: 0 means ignore provider numbers and auto-assign
+                channel_number = None
+
+            if channel_number is None:
+                # Still None, auto-assign the next available channel number
+                channel_number = Channel.get_next_available_channel_number()
+
+            try:
+                channel_number = float(channel_number)
+            except (ValueError, TypeError):
+                return Response(
+                    {"error": "channel_number must be a valid number."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+                
+            # If the provided number is already used, find next available
+            if Channel.objects.filter(channel_number=channel_number).exists():
+                channel_number = Channel.get_next_available_channel_number(channel_number)
+                
+            # Get the tvc_guide_stationid from custom properties if it exists
+            stream_custom_props = stream.custom_properties or {}
+            tvc_guide_stationid = stream_custom_props.get("tvc-guide-stationid")
+
+            channel_data = {
+                "channel_number": channel_number,
+                "name": name,
+                "tvg_id": stream.tvg_id,
+                "tvc_guide_stationid": tvc_guide_stationid,
+                "streams": [stream_id],
+                "is_adult": stream.is_adult or False,
+                "is_hidden": False,
+                "sort_order": 0,
+                "auto_created": False,
+            }
+
+            # Only add channel_group_id if a group was found
+            if channel_group:
+                channel_data["channel_group_id"] = channel_group.id
+
+            if stream.logo_url:
+                # Import validation function
+                from apps.channels.tasks import validate_logo_url
+                validated_logo_url = validate_logo_url(stream.logo_url)
+                if validated_logo_url:
+                    try:
+                        logo, _ = Logo.objects.get_or_create(
+                            url=validated_logo_url, 
+                            defaults={"name": stream.name or stream.tvg_id or "Logo"}
                         )
+                        channel_data["logo_id"] = logo.id
+                    except Exception as e:
+                        logger.warning(f"Failed to create/get Logo for stream {stream_id}: {e}")
 
-                    ChannelProfileMembership.objects.bulk_create([
-                        ChannelProfileMembership(
-                            channel_profile=profile,
-                            channel=channel,
-                            enabled=True
-                        )
-                        for profile in channel_profiles
-                    ])
-                except Exception as e:
-                    return Response(
-                        {"error": f"Error creating profile memberships: {str(e)}"},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+            # Attempt to find existing EPGs with the same tvg-id
+            if stream.tvg_id:
+                from apps.epg.models import EPGData
+                epgs = EPGData.objects.filter(tvg_id=stream.tvg_id)
+                if epgs.exists():
+                    channel_data["epg_data_id"] = epgs.first().id
 
-        # Send WebSocket notification for single channel creation
-        from core.utils import send_websocket_update
-        send_websocket_update('updates', 'update', {
-            'type': 'channels_created',
-            'count': 1,
-            'channel_id': channel.id,
-            'channel_name': channel.name,
-            'channel_number': channel.channel_number
-        })
+            serializer = self.get_serializer(data=channel_data)
+            serializer.is_valid(raise_exception=True)
 
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+            with transaction.atomic():
+                channel = serializer.save()
+                self._handle_channel_profile_memberships(
+                    channel, 
+                    request.data.get("channel_profile_ids")
+                )
+
+            # Send WebSocket notification for single channel creation
+            try:
+                from core.utils import send_websocket_update
+                send_websocket_update('updates', 'update', {
+                    'type': 'channels_created',
+                    'count': 1,
+                    'channel_id': channel.id,
+                    'channel_name': channel.name,
+                    'channel_number': channel.channel_number
+                })
+            except Exception as ws_err:
+                logger.warning(f"Failed to send websocket update for channel creation: {ws_err}")
+
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            logger.exception(f"Unexpected error in from_stream for stream {request.data.get('stream_id')}: {e}")
+            return Response(
+                {"error": f"Failed to create channel: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     @extend_schema(
         methods=["POST"],
@@ -1074,6 +1379,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         stream_ids = request.data.get("stream_ids", [])
         channel_profile_ids = request.data.get("channel_profile_ids")
         starting_channel_number = request.data.get("starting_channel_number")
+        channel_group_id = request.data.get("channel_group_id")
 
         if not stream_ids:
             return Response(
@@ -1093,7 +1399,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 channel_profile_ids = [channel_profile_ids]
 
         # Start the async task
-        task = bulk_create_channels_from_streams.delay(stream_ids, channel_profile_ids, starting_channel_number)
+        task = bulk_create_channels_from_streams.delay(
+            stream_ids, channel_profile_ids, starting_channel_number, channel_group_id
+        )
 
         return Response({
             "task_id": task.id,
@@ -1123,6 +1431,26 @@ class ChannelViewSet(viewsets.ModelViewSet):
     def match_epg(self, request):
         # Get channel IDs from request body if provided
         channel_ids = request.data.get('channel_ids', [])
+        channel_group_id = request.data.get('channel_group', None)
+        profile_id = request.data.get('profile_id', None)
+
+        # If a group is specified, resolve to channel IDs
+        if channel_group_id and not channel_ids:
+            channel_ids = list(
+                Channel.objects.filter(channel_group_id=channel_group_id)
+                .values_list('id', flat=True)
+            )
+
+        # If a profile is specified, resolve to all channel IDs in that profile's groups
+        if profile_id and not channel_ids:
+            from apps.channels.models import ProfileGroup
+            group_ids = ProfileGroup.objects.filter(
+                profile_id=profile_id
+            ).values_list('group_id', flat=True)
+            channel_ids = list(
+                Channel.objects.filter(channel_group_id__in=group_ids)
+                .values_list('id', flat=True)
+            )
 
         if channel_ids:
             # Process only selected channels
@@ -1137,6 +1465,66 @@ class ChannelViewSet(viewsets.ModelViewSet):
         return Response(
             {"message": message}, status=status.HTTP_202_ACCEPTED
         )
+
+    @extend_schema(
+        methods=["DELETE"],
+        description="Bulk delete channels from a list of IDs.",
+        request=inline_serializer(
+            name="BulkDeleteChannelsRequest",
+            fields={
+                "channel_ids": serializers.ListField(
+                    child=serializers.IntegerField(),
+                    help_text="Channel IDs to delete",
+                )
+            },
+        ),
+    )
+    @action(detail=False, methods=["delete"], url_path="bulk-delete")
+    def bulk_delete(self, request):
+        channel_ids = request.data.get("channel_ids", [])
+        if not channel_ids:
+            return Response({"error": "No channel_ids provided"}, status=400)
+        
+        from .models import Channel
+        count, _ = Channel.objects.filter(id__in=channel_ids).delete()
+        return Response({"message": f"Deleted {count} channels", "deleted_count": count}, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        methods=["POST"],
+        description="Deduplicate channels from a list of IDs by keeping only one per name.",
+        request=inline_serializer(
+            name="BulkDedupeChannelsRequest",
+            fields={
+                "channel_ids": serializers.ListField(
+                    child=serializers.IntegerField(),
+                    help_text="Channel IDs to deduplicate",
+                )
+            },
+        ),
+    )
+    @action(detail=False, methods=["post"], url_path="bulk-dedupe")
+    def bulk_dedupe(self, request):
+        channel_ids = request.data.get("channel_ids", [])
+        if not channel_ids:
+            return Response({"error": "No channel_ids provided"}, status=400)
+
+        from .models import Channel
+        channels = Channel.objects.filter(id__in=channel_ids).only('id', 'name', 'channel_group_id').order_by('id')
+        seen = set()
+        to_delete = []
+
+        for c in channels:
+            key = (c.name.lower().strip(), c.channel_group_id)
+            if key in seen:
+                to_delete.append(c.id)
+            else:
+                seen.add(key)
+
+        if to_delete:
+            count, _ = Channel.objects.filter(id__in=to_delete).delete()
+            return Response({"message": f"Removed {count} duplicate channels", "deleted_count": count})
+        
+        return Response({"message": "No duplicates found", "deleted_count": 0})
 
     @extend_schema(
         methods=["POST"],
@@ -1314,6 +1702,70 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
     @extend_schema(
         methods=["POST"],
+        description="Create a new empty channel with no streams attached.",
+        request=inline_serializer(
+            name="CreateEmptyChannelRequest",
+            fields={
+                "channel_group_id": serializers.IntegerField(
+                    help_text="ID of the channel group to assign the channel to",
+                    required=False,
+                ),
+                "name": serializers.CharField(
+                    help_text="Desired channel name", required=False
+                ),
+                "channel_number": serializers.FloatField(
+                    help_text="(Optional) Desired channel number.",
+                    required=False,
+                ),
+            },
+        ),
+        responses={201: ChannelSerializer()},
+    )
+    @action(detail=False, methods=["post"], url_path="create-empty")
+    def create_empty(self, request):
+        channel_group_id = request.data.get("channel_group_id")
+        name = request.data.get("name", "New Channel")
+        channel_number = request.data.get("channel_number")
+
+        channel_group = None
+        if channel_group_id:
+            channel_group = get_object_or_404(ChannelGroup, pk=channel_group_id)
+
+        if channel_number is None:
+            channel_number = Channel.get_next_available_channel_number()
+        else:
+            try:
+                channel_number = float(channel_number)
+            except (ValueError, TypeError):
+                return Response(
+                    {"error": "channel_number must be a number"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if Channel.objects.filter(channel_number=channel_number).exists():
+                channel_number = Channel.get_next_available_channel_number(channel_number)
+
+        with transaction.atomic():
+            channel = Channel.objects.create(
+                channel_number=channel_number,
+                name=name,
+                channel_group=channel_group
+            )
+
+            # Handle channel profile membership (default to ALL profiles if not specified)
+            # This matches the from_stream behavior
+            profiles = ChannelProfile.objects.all()
+            ChannelProfileMembership.objects.bulk_create([
+                ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
+                for profile in profiles
+            ])
+
+        serializer = self.get_serializer(channel)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+    @extend_schema(
+        methods=["POST"],
         description="Associate multiple channels with EPG data without triggering a full refresh",
         request=inline_serializer(
             name="BatchSetEpgRequest",
@@ -1414,6 +1866,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         )
 
 
+
 # ─────────────────────────────────────────────────────────
 # 4) Bulk Delete Streams
 # ─────────────────────────────────────────────────────────
@@ -1444,38 +1897,6 @@ class BulkDeleteStreamsAPIView(APIView):
         return Response(
             {"message": "Streams deleted successfully!"},
             status=status.HTTP_204_NO_CONTENT,
-        )
-
-
-# ─────────────────────────────────────────────────────────
-# 5) Bulk Delete Channels
-# ─────────────────────────────────────────────────────────
-class BulkDeleteChannelsAPIView(APIView):
-    def get_permissions(self):
-        try:
-            return [
-                perm() for perm in permission_classes_by_method[self.request.method]
-            ]
-        except KeyError:
-            return [Authenticated()]
-
-    @extend_schema(
-        description="Bulk delete channels by ID",
-        request=inline_serializer(
-            name="BulkDeleteChannelsRequest",
-            fields={
-                "channel_ids": serializers.ListField(
-                    child=serializers.IntegerField(),
-                    help_text="Channel IDs to delete",
-                )
-            },
-        ),
-    )
-    def delete(self, request):
-        channel_ids = request.data.get("channel_ids", [])
-        Channel.objects.filter(id__in=channel_ids).delete()
-        return Response(
-            {"message": "Channels deleted"}, status=status.HTTP_204_NO_CONTENT
         )
 
 
@@ -1738,10 +2159,46 @@ class LogoViewSet(viewsets.ModelViewSet):
                 {"error": str(e)}, status=status.HTTP_400_BAD_REQUEST
             )
 
-        file_name = file.name
+        # Get custom name from request data first, fallback to sanitized filename
+        custom_name = request.data.get('name', '').strip()
+        
+        # Sanitize the filename to prevent URL encoding issues
+        # Replace spaces and special characters (except dots for extensions) with underscores
+        import re
+        import hashlib
+        
+        if custom_name:
+            # Use custom name if provided, sanitize it
+            file_name = re.sub(r'[^a-zA-Z0-9.]', '_', custom_name)
+        else:
+            # Fallback to original filename, but sanitize it
+            file_name = re.sub(r'[^a-zA-Z0-9.]', '_', file.name)
+        
+        # Compute hash of file content for deduplication
+        file_hash = hashlib.sha256()
+        for chunk in file.chunks():
+            file_hash.update(chunk)
+        file_hash_hex = file_hash.hexdigest()
+        
+        # Check if a logo with this hash already exists
+        existing_logo = Logo.objects.filter(file_hash=file_hash_hex).first()
+        if existing_logo:
+            # Reuse existing logo instead of creating a duplicate
+            logger.info(f"Reusing existing logo with hash {file_hash_hex}: {existing_logo.url}")
+            serializer = self.get_serializer(existing_logo)
+            return Response(
+                serializer.data,
+                status=status.HTTP_200_OK,
+            )
+        
+        # File doesn't exist, save it
         file_path = os.path.join("/data/logos", file_name)
 
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        
+        # Reset file pointer since we read it for hashing
+        file.seek(0)
+        
         with open(file_path, "wb+") as destination:
             for chunk in file.chunks():
                 destination.write(chunk)
@@ -1760,13 +2217,13 @@ class LogoViewSet(viewsets.ModelViewSet):
             logger.warning(f"Failed to mark logo file as processed in Redis: {e}")
 
         # Get custom name from request data, fallback to filename
-        custom_name = request.data.get('name', '').strip()
         logo_name = custom_name if custom_name else file_name
 
         logo, _ = Logo.objects.get_or_create(
             url=file_path,
             defaults={
                 "name": logo_name,
+                "file_hash": file_hash_hex,
             },
         )
 
@@ -1862,13 +2319,19 @@ class ChannelProfileViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        if user.user_level >= 10:  # Admin
+            # Annotate to sort own profiles first
+            from django.db.models import Case, When, Value, IntegerField
+            return ChannelProfile.objects.annotate(
+                is_own=Case(
+                    When(created_by=user, then=Value(0)),
+                    default=Value(1),
+                    output_field=IntegerField()
+                )
+            ).order_by('is_own', 'name')
 
-        # If user_level is 10, return all ChannelProfiles
-        if hasattr(user, "user_level") and user.user_level == 10:
-            return ChannelProfile.objects.all()
-
-        # Otherwise, return only ChannelProfiles related to the user
-        return self.request.user.channel_profiles.all()
+        # Standard users see only their own profiles
+        return ChannelProfile.objects.filter(created_by=user)
 
     def get_permissions(self):
         if self.action == "duplicate":
@@ -1878,6 +2341,165 @@ class ChannelProfileViewSet(viewsets.ModelViewSet):
         except KeyError:
             return [Authenticated()]
 
+    def create(self, request, *args, **kwargs):
+        """Create a new profile with optional group cloning from M3U sources"""
+        print(f"[DEBUG] create() called with data: {request.data}")
+        
+        user = request.user
+        name = request.data.get('name', '').strip()
+        clone_groups = request.data.get('clone_groups', [])
+        include_channels = request.data.get('include_channels', False)
+
+        print(f"[DEBUG] Parsed - name: '{name}', clone_groups count: {len(clone_groups)}, include_channels: {include_channels}")
+        logger.info(f"[CreateProfile] Creating profile '{name}' with {len(clone_groups)} groups, include_channels={include_channels}")
+        logger.debug(f"[CreateProfile] clone_groups data: {clone_groups}")
+
+        if not name:
+            return Response(
+                {'detail': 'Name is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check unique constraint
+        if ChannelProfile.objects.filter(created_by=user, name=name).exists():
+            return Response(
+                {'detail': 'You already have a channel profile with this name.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        with transaction.atomic():
+            # Create the new profile
+            new_profile = ChannelProfile.objects.create(
+                name=name,
+                created_by=user
+            )
+            logger.info(f"[CreateProfile] Created profile {new_profile.id}: {new_profile.name}")
+
+            # If groups to clone were specified
+            if clone_groups:
+                groups_added = 0
+                channels_added = 0
+                
+                seen_groups = set()
+                for group_data in clone_groups:
+                    channel_group_id = group_data.get('channel_group_id')
+                    if not channel_group_id or channel_group_id in seen_groups:
+                        continue
+                    seen_groups.add(channel_group_id)
+
+                    channel_group = ChannelGroup.objects.filter(id=channel_group_id).first()
+                    if not channel_group:
+                        logger.warning(f"[CreateProfile] Group {channel_group_id} not found")
+                        continue
+
+                    # Add the group to the profile
+                    max_order = ProfileGroup.objects.filter(profile=new_profile).count()
+                    ProfileGroup.objects.create(
+                        profile=new_profile,
+                        channel_group=channel_group,
+                        order=max_order,
+                        is_active=True,
+                    )
+                    groups_added += 1
+                    logger.info(f"[CreateProfile] Added group {channel_group.id}: {channel_group.name}")
+
+                    # If include_channels is True, add all channels from this group to the profile
+                    if include_channels:
+                        channels_in_group = Channel.objects.filter(channel_group=channel_group)
+                        channel_count = channels_in_group.count()
+                        logger.info(f"[CreateProfile] Found {channel_count} channels in group {channel_group.name}")
+                        
+                        memberships_to_create = [
+                            ChannelProfileMembership(
+                                channel_profile=new_profile,
+                                channel=channel,
+                                enabled=True
+                            )
+                            for channel in channels_in_group
+                        ]
+                        if memberships_to_create:
+                            created = ChannelProfileMembership.objects.bulk_create(
+                                memberships_to_create,
+                                ignore_conflicts=True
+                            )
+                            channels_added += len(created)
+                            logger.info(f"[CreateProfile] Created {len(created)} channel memberships")
+                
+                logger.info(f"[CreateProfile] Summary: Added {groups_added} groups and {channels_added} channels")
+
+            serializer = self.get_serializer(new_profile)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @extend_schema(
+        request=inline_serializer(
+            'CloneProfileRequest',
+            fields={
+                'name': serializers.CharField(),
+                'copy_channels': serializers.BooleanField(default=False)
+            }
+        ),
+        responses={200: ChannelProfileSerializer}
+    )
+    @action(detail=True, methods=['post'], url_path='clone')
+    def clone(self, request, pk=None):
+        """Clone a profile with optional channel memberships"""
+        user = request.user
+        source_profile = self.get_object()
+        
+        # Check permissions: admins can clone any, users can only clone admin profiles or own
+        is_admin = hasattr(user, 'user_level') and user.user_level == 10
+        is_admin_profile = source_profile.created_by and source_profile.created_by.user_level == 10
+        is_own_profile = source_profile.created_by == user
+        
+        if not is_admin and not is_admin_profile and not is_own_profile:
+            return Response(
+                {'error': 'You do not have permission to clone this profile'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        requested_name = str(request.data.get('name', '')).strip()
+        copy_channels = request.data.get('copy_channels', False)
+        
+        if not requested_name:
+            return Response(
+                {'detail': 'Name is required to clone a profile.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check unique constraint: unique_together on (created_by, name)
+        if ChannelProfile.objects.filter(created_by=user, name=requested_name).exists():
+            return Response(
+                {'detail': 'You already have a channel profile with this name.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        with transaction.atomic():
+            # Create new profile owned by current user
+            new_profile = ChannelProfile.objects.create(
+                name=requested_name,
+                created_by=user
+            )
+            
+            if copy_channels:
+                # Copy channel memberships from source profile
+                source_memberships = ChannelProfileMembership.objects.filter(
+                    channel_profile=source_profile
+                )
+                
+                new_memberships = [
+                    ChannelProfileMembership(
+                        channel_profile=new_profile,
+                        channel=membership.channel,
+                        enabled=membership.enabled
+                    )
+                    for membership in source_memberships
+                ]
+                
+                if new_memberships:
+                    ChannelProfileMembership.objects.bulk_create(new_memberships)
+            
+            serializer = self.get_serializer(new_profile)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
     @action(detail=True, methods=["post"], url_path="duplicate", permission_classes=[IsAdmin])
     def duplicate(self, request, pk=None):
         requested_name = str(request.data.get("name", "")).strip()
@@ -1922,6 +2544,193 @@ class ChannelProfileViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(new_profile)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['get'], url_path='groups')
+    def groups(self, request, pk=None):
+        """List all groups associated with this profile, ordered by their position."""
+        profile = self.get_object()
+        pgs = ProfileGroup.objects.filter(profile=profile).select_related('channel_group').order_by('order')
+        serializer = ProfileGroupSerializer(pgs, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='add-group')
+    def add_group(self, request, pk=None):
+        """Add a group to this profile. Creates or duplicates the ChannelGroup if specified."""
+        profile = self.get_object()
+        channel_group_id = request.data.get('channel_group_id')
+        group_name = request.data.get('name')
+        duplicate_from_id = request.data.get('duplicate_from_id')
+
+        if not channel_group_id and not group_name and not duplicate_from_id:
+            return Response(
+                {'error': 'Either channel_group_id, name, or duplicate_from_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        with transaction.atomic():
+            if duplicate_from_id:
+                # Duplicate logic: Create a new group and copy channels from source
+                source_group = get_object_or_404(ChannelGroup, id=duplicate_from_id)
+                channel_group = ChannelGroup.objects.create(
+                    name=group_name or f"{source_group.name} (Copy)",
+                    image=source_group.image,
+                    sort_mode=source_group.sort_mode,
+                    sort_field=source_group.sort_field
+                )
+                
+                # Copy all channels from source group
+                source_channels = Channel.objects.filter(channel_group=source_group)
+                for src_chan in source_channels:
+                    # Create new channel inheriting properties
+                    new_chan = Channel.objects.create(
+                        channel_number=src_chan.channel_number,
+                        name=src_chan.name,
+                        logo=src_chan.logo,
+                        channel_group=channel_group,
+                        tvg_id=src_chan.tvg_id,
+                        tvc_guide_stationid=src_chan.tvc_guide_stationid,
+                        epg_data=src_chan.epg_data,
+                        stream_profile=src_chan.stream_profile,
+                        user_level=src_chan.user_level,
+                        is_adult=src_chan.is_adult,
+                        auto_created=False, # Clones are manually managed
+                        sort_order=src_chan.sort_order
+                    )
+                    
+                    # Copy stream associations
+                    channel_streams = ChannelStream.objects.filter(channel=src_chan)
+                    new_channel_streams = [
+                        ChannelStream(
+                            channel=new_chan,
+                            stream=cs.stream,
+                            order=cs.order
+                        )
+                        for cs in channel_streams
+                    ]
+                    if new_channel_streams:
+                        ChannelStream.objects.bulk_create(new_channel_streams)
+                    
+                    # Copy profile enablement status if it exists for this profile
+                    src_membership = ChannelProfileMembership.objects.filter(
+                        channel_profile=profile,
+                        channel=src_chan
+                    ).first()
+                    
+                    if src_membership:
+                        ChannelProfileMembership.objects.create(
+                            channel_profile=profile,
+                            channel=new_chan,
+                            enabled=src_membership.enabled
+                        )
+            
+            elif channel_group_id:
+                channel_group = get_object_or_404(ChannelGroup, id=channel_group_id)
+            else:
+                channel_group, _ = ChannelGroup.objects.get_or_create(name=group_name)
+
+            # Check if already linked
+            if ProfileGroup.objects.filter(profile=profile, channel_group=channel_group).exists():
+                return Response(
+                    {'error': 'This group is already in this profile'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Add at end of order
+            max_order = ProfileGroup.objects.filter(profile=profile).count()
+            pg = ProfileGroup.objects.create(
+                profile=profile,
+                channel_group=channel_group,
+                order=max_order,
+                is_active=True,
+            )
+            serializer = ProfileGroupSerializer(pg)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='remove-group')
+    def remove_group(self, request, pk=None):
+        """Remove a group from this profile."""
+        profile = self.get_object()
+        channel_group_id = request.data.get('channel_group_id')
+        if not channel_group_id:
+            return Response(
+                {'error': 'channel_group_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        pg = get_object_or_404(ProfileGroup, profile=profile, channel_group_id=channel_group_id)
+        pg.delete()
+
+        # Re-order remaining groups
+        remaining = ProfileGroup.objects.filter(profile=profile).order_by('order')
+        for idx, rpg in enumerate(remaining):
+            if rpg.order != idx:
+                rpg.order = idx
+                rpg.save(update_fields=['order'])
+
+        return Response({'status': 'removed'}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='reorder-groups')
+    def reorder_groups(self, request, pk=None):
+        """Reorder groups in this profile. Expects {group_ids: [id1, id2, ...]}."""
+        profile = self.get_object()
+        group_ids = request.data.get('group_ids', [])
+        if not group_ids:
+            return Response(
+                {'error': 'group_ids list is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        with transaction.atomic():
+            for idx, gid in enumerate(group_ids):
+                ProfileGroup.objects.filter(
+                    profile=profile, channel_group_id=gid
+                ).update(order=idx)
+
+        pgs = ProfileGroup.objects.filter(profile=profile).select_related('channel_group').order_by('order')
+        serializer = ProfileGroupSerializer(pgs, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['patch'], url_path='toggle-group')
+    def toggle_group(self, request, pk=None):
+        """Toggle a group's active status in this profile."""
+        profile = self.get_object()
+        channel_group_id = request.data.get('channel_group_id')
+        is_active = request.data.get('is_active')
+        if channel_group_id is None or is_active is None:
+            return Response(
+                {'error': 'channel_group_id and is_active are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        pg = get_object_or_404(ProfileGroup, profile=profile, channel_group_id=channel_group_id)
+        pg.is_active = is_active
+        pg.save(update_fields=['is_active'])
+        serializer = ProfileGroupSerializer(pg)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['post'], url_path='from-source')
+    def from_source(self, request):
+        """Create a profile from one or more M3U sources (async)"""
+        name = request.data.get('name', '').strip()
+        source_ids = request.data.get('source_ids', [])
+        include_channels = request.data.get('include_channels', True)
+
+        if not name:
+            return Response({'error': 'Name is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not source_ids:
+            return Response({'error': 'source_ids are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Trigger task
+        task = create_profile_from_source_task.delay(
+            profile_name=name,
+            source_ids=source_ids,
+            user_id=request.user.id,
+            include_channels=include_channels
+        )
+
+        return Response({
+            'status': 'Task triggered',
+            'task_id': task.id,
+            'message': f"Creating profile '{name}' from sources in the background."
+        }, status=status.HTTP_202_ACCEPTED)
 
 
 class GetChannelStreamsAPIView(APIView):

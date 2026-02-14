@@ -40,6 +40,8 @@ import {
   ArrowUpDown,
   ArrowDownWideNarrow,
   Search,
+  User,
+  Clock,
 } from 'lucide-react';
 import {
   Box,
@@ -336,6 +338,7 @@ const ChannelsTable = ({ onReady }) => {
   const [hdhrUrl, setHDHRUrl] = useState(hdhrUrlBase);
   const [epgUrl, setEPGUrl] = useState(epgUrlBase);
   const [m3uUrl, setM3UUrl] = useState(m3uUrlBase);
+  const [xcHost, setXCHost] = useState('');
 
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -852,7 +855,10 @@ const ChannelsTable = ({ onReady }) => {
     setHDHRUrl(`${hdhrUrlBase}${profileString}`);
     setEPGUrl(`${epgUrlBase}${profileString}`);
     setM3UUrl(`${m3uUrlBase}${profileString}`);
-  }, [selectedProfileId, profiles]);
+
+    const baseHost = env_mode === 'dev' ? `${window.location.protocol}//${window.location.hostname}:5656` : `${window.location.protocol}//${window.location.host}`;
+    setXCHost(baseHost);
+  }, [selectedProfileId, profiles, env_mode]);
 
   useEffect(() => {
     const startItem = pagination.pageIndex * pagination.pageSize + 1; // +1 to start from 1, not 0
@@ -1143,8 +1149,8 @@ const ChannelsTable = ({ onReady }) => {
       return hasStreams
         ? {} // Default style for channels with streams
         : {
-            className: 'no-streams-row', // Add a class instead of background color
-          };
+          className: 'no-streams-row', // Add a class instead of background color
+        };
     },
   });
 
@@ -1419,6 +1425,89 @@ const ChannelsTable = ({ onReady }) => {
                           ...prev,
                           days: value || 0,
                         }))
+                      }
+                    />
+                  </Stack>
+                </Popover.Dropdown>
+              </Popover>
+              <Popover
+                withArrow
+                shadow="md"
+                zIndex={1000}
+                position="bottom-start"
+                withinPortal
+              >
+                <Popover.Target>
+                  <Button
+                    leftSection={<User size={18} />}
+                    size="compact-sm"
+                    p={5}
+                    variant="subtle"
+                    style={{
+                      borderColor: theme.palette.secondary.main,
+                      color: theme.palette.secondary.main,
+                    }}
+                  >
+                    XC
+                  </Button>
+                </Popover.Target>
+                <Popover.Dropdown>
+                  <Stack
+                    gap="sm"
+                    style={{
+                      minWidth: 300,
+                      maxWidth: 'min(450px, 85vw)',
+                      width: 'max-content',
+                    }}
+                    onClick={stopPropagation}
+                    onMouseDown={stopPropagation}
+                  >
+                    <TextInput
+                      label="Host"
+                      value={xcHost}
+                      size="xs"
+                      readOnly
+                      rightSection={
+                        <ActionIcon
+                          onClick={() => copyToClipboard(xcHost)}
+                          size="sm"
+                          variant="transparent"
+                          color="gray.5"
+                        >
+                          <Copy size="16" />
+                        </ActionIcon>
+                      }
+                    />
+                    <TextInput
+                      label="Username"
+                      value={useAuthStore.getState().user?.username || ''}
+                      size="xs"
+                      readOnly
+                      rightSection={
+                        <ActionIcon
+                          onClick={() => copyToClipboard(useAuthStore.getState().user?.username)}
+                          size="sm"
+                          variant="transparent"
+                          color="gray.5"
+                        >
+                          <Copy size="16" />
+                        </ActionIcon>
+                      }
+                    />
+                    <TextInput
+                      label="Password"
+                      value={useAuthStore.getState().user?.custom_properties?.xc_password || 'Not set'}
+                      size="xs"
+                      readOnly
+                      rightSection={
+                        <ActionIcon
+                          onClick={() => copyToClipboard(useAuthStore.getState().user?.custom_properties?.xc_password)}
+                          size="sm"
+                          variant="transparent"
+                          color="gray.5"
+                        >
+                          <Copy size="16" />
+                        </ActionIcon>
                       }
                     />
                   </Stack>

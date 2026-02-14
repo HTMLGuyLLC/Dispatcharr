@@ -24,12 +24,13 @@ def get_stream_object(id: str):
         logger.info(f"Fetching stream hash {id}")
         return get_object_or_404(Stream, stream_hash=id)
 
-def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]:
+def generate_stream_url(channel_id: str, user=None) -> Tuple[str, str, bool, Optional[int]]:
     """
     Generate the appropriate stream URL for a channel or stream based on its profile settings.
 
     Args:
         channel_id: The UUID of the channel or stream hash
+        user: Optional authenticated user for XC credential passthrough
 
     Returns:
         Tuple[str, str, bool, Optional[int]]: (stream_url, user_agent, transcode_flag, profile_id)
@@ -46,77 +47,136 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
 
             # For custom streams, we need to get the M3U account and profile
             m3u_account = stream.m3u_account
-            if not m3u_account:
-                logger.error(f"Stream {stream.id} has no M3U account")
+            xtream_account = stream.xtream_account
+            
+            # Check if this is an Xtream stream with passthrough enabled
+            use_passthrough = False
+            if user and xtream_account:
+                custom_props = user.custom_properties or {}
+                if custom_props.get('xc_passthrough_enabled', False) and custom_props.get('xc_password'):
+                    use_passthrough = True
+                    logger.info(f"Using XC credential passthrough for user {user.username} on Xtream stream {stream.id}")
+                    # Proactively sync user info from source XC to keep connection limit and expiration updated
+                    user.sync_xc_account_info()
+            
+            if not m3u_account and not xtream_account:
+                logger.error(f"Stream {stream.id} has no M3U or Xtream account")
                 return None, None, False, None
 
-            # Get active profiles for this M3U account
-            m3u_profiles = m3u_account.profiles.filter(is_active=True)
-            default_profile = next((obj for obj in m3u_profiles if obj.is_default), None)
-
-            if not default_profile:
-                logger.error(f"No default active profile found for M3U account {m3u_account.id}")
-                return None, None, False, None
-
-            # Check profiles in order: default first, then others
-            profiles = [default_profile] + [obj for obj in m3u_profiles if not obj.is_default]
-
-            # Try to find an available profile with connection capacity
-            redis_client = RedisClient.get_client()
-            selected_profile = None
-
-            for profile in profiles:
-                logger.info(profile)
-
-                # Check connection availability
-                if redis_client:
-                    profile_connections_key = f"profile_connections:{profile.id}"
-                    current_connections = int(redis_client.get(profile_connections_key) or 0)
-
-                    # Check if profile has available slots (or unlimited connections)
-                    if profile.max_streams == 0 or current_connections < profile.max_streams:
-                        selected_profile = profile
-                        logger.debug(f"Selected profile {profile.id} with {current_connections}/{profile.max_streams} connections for stream preview")
-                        break
-                    else:
-                        logger.debug(f"Profile {profile.id} at max connections: {current_connections}/{profile.max_streams}")
+            # Handle Xtream account streams with passthrough
+            if xtream_account and use_passthrough:
+                # For passthrough, construct URL with user's credentials
+                stream_url = stream.url
+                if stream_url:
+                    # Replace credentials in XC URL format
+                    # Typical XC URL: http://server:port/username/password/stream_id
+                    # Or: http://server:port/live/username/password/stream_id.ts
+                    import re
+                    custom_props = user.custom_properties or {}
+                    user_xc_password = custom_props.get('xc_password', '')
+                    
+                    # Pattern to match XC-style URLs and replace credentials
+                    # Match: /username/password/ or /live/username/password/
+                    pattern = r'(/live/|/)([^/]+)/([^/]+)(/)'
+                    replacement = rf'\1{user.username}/{user_xc_password}\4'
+                    stream_url = re.sub(pattern, replacement, stream_url)
+                    logger.info(f"Transformed XC URL for passthrough: credentials replaced for user {user.username}")
+                
+                # Get user agent from Xtream account
+                stream_user_agent = xtream_account.user_agent.user_agent if xtream_account.user_agent else None
+                if stream_user_agent is None:
+                    stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id()).user_agent
+                    logger.debug(f"No user agent found for Xtream account, using default: {stream_user_agent}")
+                
+                # Check if the stream has its own stream_profile set, otherwise use default
+                if stream.stream_profile:
+                    stream_profile = stream.stream_profile
+                    logger.debug(f"Using stream's own stream profile: {stream_profile.name}")
                 else:
-                    # No Redis available, use first active profile
-                    selected_profile = profile
-                    break
+                    stream_profile = StreamProfile.objects.get(
+                        id=CoreSettings.get_default_stream_profile_id()
+                    )
+                    logger.debug(f"Using default stream profile: {stream_profile.name}")
 
-            if not selected_profile:
-                logger.error(f"No profiles available with connection capacity for M3U account {m3u_account.id}")
-                return None, None, False, None
+                # Check if transcoding is needed
+                if stream_profile.is_proxy() or stream_profile is None:
+                    transcode = False
+                else:
+                    transcode = True
 
-            # Get the appropriate user agent
-            stream_user_agent = m3u_account.get_user_agent().user_agent
-            if stream_user_agent is None:
-                stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
-                logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
+                stream_profile_id = stream_profile.id
 
-            # Get stream URL with the selected profile's URL transformation
-            stream_url = transform_url(stream.url, selected_profile.search_pattern, selected_profile.replace_pattern)
+                return stream_url, stream_user_agent, transcode, stream_profile_id
 
-            # Check if the stream has its own stream_profile set, otherwise use default
-            if stream.stream_profile:
-                stream_profile = stream.stream_profile
-                logger.debug(f"Using stream's own stream profile: {stream_profile.name}")
-            else:
-                stream_profile = StreamProfile.objects.get(
-                    id=CoreSettings.get_default_stream_profile_id()
-                )
-                logger.debug(f"Using default stream profile: {stream_profile.name}")
+            # Original M3U account logic
+            if m3u_account:
+                # Get active profiles for this M3U account
+                m3u_profiles = m3u_account.profiles.filter(is_active=True)
+                default_profile = next((obj for obj in m3u_profiles if obj.is_default), None)
 
-            # Check if transcoding is needed
-            if stream_profile.is_proxy() or stream_profile is None:
-                transcode = False
-            else:
-                transcode = True
+                if not default_profile:
+                    logger.error(f"No default active profile found for M3U account {m3u_account.id}")
+                    return None, None, False, None
 
-            stream_profile_id = stream_profile.id
+                # Check profiles in order: default first, then others
+                profiles = [default_profile] + [obj for obj in m3u_profiles if not obj.is_default]
 
-            return stream_url, stream_user_agent, transcode, stream_profile_id
+                # Try to find an available profile with connection capacity
+                redis_client = RedisClient.get_client()
+                selected_profile = None
+
+                for profile in profiles:
+                    logger.info(profile)
+
+                    # Check connection availability
+                    if redis_client:
+                        profile_connections_key = f"profile_connections:{profile.id}"
+                        current_connections = int(redis_client.get(profile_connections_key) or 0)
+
+                        # Check if profile has available slots (or unlimited connections)
+                        if profile.max_streams == 0 or current_connections < profile.max_streams:
+                            selected_profile = profile
+                            logger.debug(f"Selected profile {profile.id} with {current_connections}/{profile.max_streams} connections for stream preview")
+                            break
+                        else:
+                            logger.debug(f"Profile {profile.id} at max connections: {current_connections}/{profile.max_streams}")
+                    else:
+                        # No Redis available, use first active profile
+                        selected_profile = profile
+                        break
+
+                if not selected_profile:
+                    logger.error(f"No profiles available with connection capacity for M3U account {m3u_account.id}")
+                    return None, None, False, None
+
+                # Get the appropriate user agent
+                stream_user_agent = m3u_account.get_user_agent().user_agent
+                if stream_user_agent is None:
+                    stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id())
+                    logger.debug(f"No user agent found for account, using default: {stream_user_agent}")
+
+                # Get stream URL with the selected profile's URL transformation
+                stream_url = transform_url(stream.url, selected_profile.search_pattern, selected_profile.replace_pattern)
+
+                # Check if the stream has its own stream_profile set, otherwise use default
+                if stream.stream_profile:
+                    stream_profile = stream.stream_profile
+                    logger.debug(f"Using stream's own stream profile: {stream_profile.name}")
+                else:
+                    stream_profile = StreamProfile.objects.get(
+                        id=CoreSettings.get_default_stream_profile_id()
+                    )
+                    logger.debug(f"Using default stream profile: {stream_profile.name}")
+
+                # Check if transcoding is needed
+                if stream_profile.is_proxy() or stream_profile is None:
+                    transcode = False
+                else:
+                    transcode = True
+
+                stream_profile_id = stream_profile.id
+
+                return stream_url, stream_user_agent, transcode, stream_profile_id
 
         # Handle channel preview (existing logic)
         channel = channel_or_stream
@@ -132,6 +192,52 @@ def generate_stream_url(channel_id: str) -> Tuple[str, str, bool, Optional[int]]
         # Look up the Stream and Profile objects
         try:
             stream = Stream.objects.get(id=stream_id)
+            
+            # Check if this is an Xtream stream with passthrough enabled
+            use_passthrough = False
+            if user and stream.xtream_account:
+                custom_props = user.custom_properties or {}
+                if custom_props.get('xc_passthrough_enabled', False) and custom_props.get('xc_password'):
+                    use_passthrough = True
+                    logger.info(f"Using XC credential passthrough for user {user.username} on channel {channel_id}")
+                    # Proactively sync user info from source XC to keep connection limit and expiration updated
+                    user.sync_xc_account_info()
+            
+            # Handle Xtream passthrough
+            if use_passthrough and stream.xtream_account:
+                # For passthrough, construct URL with user's credentials
+                stream_url = stream.url
+                if stream_url:
+                    # Replace credentials in XC URL format
+                    import re
+                    custom_props = user.custom_properties or {}
+                    user_xc_password = custom_props.get('xc_password', '')
+                    
+                    # Pattern to match XC-style URLs and replace credentials
+                    pattern = r'(/live/|/)([^/]+)/([^/]+)(/)'
+                    replacement = rf'\1{user.username}/{user_xc_password}\4'
+                    stream_url = re.sub(pattern, replacement, stream_url)
+                    logger.info(f"Transformed XC URL for passthrough on channel {channel_id}")
+                
+                # Get user agent from Xtream account
+                xtream_account = stream.xtream_account
+                stream_user_agent = xtream_account.user_agent.user_agent if xtream_account.user_agent else None
+                if stream_user_agent is None:
+                    stream_user_agent = UserAgent.objects.get(id=CoreSettings.get_default_user_agent_id()).user_agent
+                    logger.debug(f"No user agent found for Xtream account, using default: {stream_user_agent}")
+                
+                # Check if transcoding is needed
+                stream_profile = channel.get_stream_profile()
+                if stream_profile.is_proxy() or stream_profile is None:
+                    transcode = False
+                else:
+                    transcode = True
+
+                stream_profile_id = stream_profile.id
+
+                return stream_url, stream_user_agent, transcode, stream_profile_id
+            
+            # Original M3U profile logic
             profile = M3UAccountProfile.objects.get(id=profile_id)
         except (Stream.DoesNotExist, M3UAccountProfile.DoesNotExist) as e:
             logger.error(f"Error getting stream or profile: {e}")

@@ -19,7 +19,7 @@ const useChannelsTableStore = create((set, get) => ({
       return {
         channels: results,
         totalCount: count,
-        pageCount: Math.ceil(count / params.get('page_size')),
+        pageCount: Math.ceil(count / (params.get('page_size') || 50)),
       };
     });
   },

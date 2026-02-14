@@ -45,9 +45,7 @@ code {
   }
 }
 
-table.mrt-table
-  tr.mantine-Table-tr.mantine-Table-tr-detail-panel
-  td.mantine-Table-td-detail-panel {
+table.mrt-table tr.mantine-Table-tr.mantine-Table-tr-detail-panel td.mantine-Table-td-detail-panel {
   width: 100% !important;
 }
 
@@ -65,7 +63,7 @@ table.mrt-table
 
 /* Styling for the sash (splitter) */
 .sash.sash-vertical {
-  position: relative;
+  position: absolute;
   width: 4px;
   /* Thin invisible divider */
   background: transparent;
@@ -139,4 +137,20 @@ table.mrt-table
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Row hover effects for Organize page */
+.stream-item-hover:hover,
+.channel-row-group-hover:hover,
+.stream-group-hover:hover {
+  background-color: var(--mantine-color-dark-4);
+}
+
+.stream-item-hover:hover .row-action-btn,
+.channel-row-group-hover:hover .row-action-btn {
+  opacity: 1 !important;
+}
+
+[data-dragging="true"] .row-action-btn {
+  display: none !important;
 }

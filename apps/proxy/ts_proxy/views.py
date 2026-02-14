@@ -44,6 +44,32 @@ from dispatcharr.utils import network_access_allowed
 logger = get_logger()
 
 
+def get_authenticated_user(request):
+    """
+    Helper to authenticate a user from request parameters or current session.
+    Used for enforcing connection limits and expiration in proxy streams.
+    """
+    if request.user.is_authenticated:
+        return request.user
+
+    username = request.GET.get("username")
+    password = request.GET.get("password")
+
+    if not username or not password:
+        return None
+
+    try:
+        from apps.accounts.models import User
+        user = User.objects.get(username=username)
+        custom_properties = user.custom_properties or {}
+        if custom_properties.get("xc_password") == password:
+            return user
+    except User.DoesNotExist:
+        pass
+
+    return None
+
+
 @api_view(["GET"])
 def stream_ts(request, channel_id):
     if not network_access_allowed(request, "STREAMS"):
@@ -51,9 +77,30 @@ def stream_ts(request, channel_id):
 
     """Stream TS data to client with immediate response and keep-alive packets during initialization"""
     channel = get_stream_object(channel_id)
+    user = get_authenticated_user(request)
 
     client_user_agent = None
     proxy_server = ProxyServer.get_instance()
+
+    # User validation and connection tracking
+    user_connections_key = None
+    if user:
+        from django.utils import timezone
+        if user.expires_at and user.expires_at < timezone.now():
+            return JsonResponse({"error": "Account expired"}, status=403)
+
+        user_connections_key = f"user_connections:{user.id}"
+        
+        # Check user-level connection limit
+        if proxy_server.redis_client:
+            current_user_connections = int(proxy_server.redis_client.get(user_connections_key) or 0)
+            if current_user_connections >= user.connection_limit:
+                logger.info(f"User {user.username} reached connection limit ({user.connection_limit})")
+                return JsonResponse({"error": "Connection limit reached"}, status=503)
+
+            # Increment user connections
+            proxy_server.redis_client.incr(user_connections_key)
+            logger.debug(f"User {user.username} connections: {current_user_connections + 1}")
 
     try:
         # Generate a unique client ID
@@ -495,7 +542,7 @@ def stream_ts(request, channel_id):
 
         # Create a stream generator for this client
         generate = create_stream_generator(
-            channel_id, client_id, client_ip, client_user_agent, channel_initializing
+            channel_id, client_id, client_ip, client_user_agent, channel_initializing, user.id if user else None
         )
 
         # Return the StreamingHttpResponse from the main function
@@ -507,6 +554,14 @@ def stream_ts(request, channel_id):
 
     except Exception as e:
         logger.error(f"Error in stream_ts: {e}", exc_info=True)
+        # If we failed before returning the streaming response, decrement the connection count
+        if user_connections_key and proxy_server.redis_client:
+            try:
+                current = int(proxy_server.redis_client.get(user_connections_key) or 0)
+                if current > 0:
+                    proxy_server.redis_client.decr(user_connections_key)
+            except Exception:
+                pass
         return JsonResponse({"error": str(e)}, status=500)
 
 
@@ -552,8 +607,20 @@ def stream_xc(request, username, password, channel_id):
     else:
         channel = get_object_or_404(Channel, id=channel_id)
 
+    from django.utils import timezone
+    if user.expires_at and user.expires_at < timezone.now():
+        return JsonResponse({"error": "Account expired"}, status=403)
+
     # @TODO: we've got the  file 'type' via extension, support this when we support multiple outputs
-    return stream_ts(request._request, str(channel.uuid))
+    # Construct the internal request with auth parameters so stream_ts can identify the user
+    # Note: request._request is the underlying Django request object
+    internal_req = request._request
+    mutable_get = internal_req.GET.copy()
+    mutable_get['username'] = username
+    mutable_get['password'] = password
+    internal_req.GET = mutable_get
+
+    return stream_ts(internal_req, str(channel.uuid))
 
 
 @csrf_exempt

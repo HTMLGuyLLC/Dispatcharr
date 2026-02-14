@@ -2,7 +2,7 @@ import ipaddress
 from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidden, StreamingHttpResponse
 from rest_framework.response import Response
 from django.urls import reverse
-from apps.channels.models import Channel, ChannelProfile, ChannelGroup
+from apps.channels.models import Channel, ChannelProfile, ChannelGroup, ProfileGroup
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from apps.epg.models import ProgramData
@@ -48,6 +48,154 @@ def get_client_identifier(request):
     client_id_hash = hashlib.md5(client_str.encode()).hexdigest()[:12]
 
     return client_id_hash, client_ip, user_agent
+
+
+def _get_group_sort_ordering(group):
+    """Map a ChannelGroup's sort settings to Django ORM ordering fields."""
+    if group.sort_mode == 'manual':
+        return ['sort_order', 'channel_number']
+
+    sort_field_map = {
+        'channel_number_asc': ['channel_number'],
+        'channel_number_desc': ['-channel_number'],
+        'name_asc': ['name'],
+        'name_desc': ['-name'],
+    }
+    return sort_field_map.get(group.sort_field, ['channel_number'])
+
+
+def _get_channels_sorted_by_groups(base_filters, profile=None, merge_all_profiles=False):
+    """Retrieve channels sorted by their group's sort settings.
+
+    Groups are ordered by ProfileGroup.order when a profile is given,
+    otherwise alphabetically by group name. Within each group, channels
+    are ordered according to the group's sort_mode / sort_field.
+
+    Args:
+        base_filters: Base filters to apply to channel queries
+        profile: Specific profile to use for ordering (optional)
+        merge_all_profiles: If True, merge all profiles together, grouping by name
+
+    Returns a flat list of Channel objects.
+    """
+    # Determine the ordered list of groups
+    if merge_all_profiles:
+        # Merge all profiles: get all active ProfileGroups from all profiles
+        # and merge groups with the same name together
+        from collections import defaultdict
+        
+        # Get all active ProfileGroups across all profiles
+        all_profile_groups = (
+            ProfileGroup.objects
+            .filter(is_active=True)
+            .select_related('channel_group')
+            .order_by('order')
+        )
+        
+        # Group by channel group name (case-insensitive, trimmed)
+        groups_by_name = defaultdict(list)
+        for pg in all_profile_groups:
+            group_name = pg.channel_group.name.strip().lower()
+            groups_by_name[group_name].append(pg.channel_group)
+        
+        # Create ordered list of unique groups (by name), keeping first occurrence
+        seen_names = set()
+        ordered_groups = []
+        for pg in all_profile_groups:
+            group_name = pg.channel_group.name.strip().lower()
+            if group_name not in seen_names:
+                seen_names.add(group_name)
+                # Use the first group with this name
+                ordered_groups.append(pg.channel_group)
+        
+        # When merging all profiles, ONLY show groups that are tied to profiles
+        # Do NOT include groups that aren't in any ProfileGroup
+        
+        # Store the mapping for later use when building channels
+        groups_by_name_map = groups_by_name
+    elif profile is not None:
+        # Handle both single profile and multiple profiles (QuerySet)
+        if hasattr(profile, '__iter__') and not isinstance(profile, str):
+            # Multiple profiles - get active groups from all profiles
+            profile_groups = (
+                ProfileGroup.objects
+                .filter(profile__in=profile, is_active=True)
+                .select_related('channel_group')
+                .order_by('order')
+                .distinct()
+            )
+        else:
+            # Single profile
+            profile_groups = (
+                ProfileGroup.objects
+                .filter(profile=profile, is_active=True)
+                .select_related('channel_group')
+                .order_by('order')
+            )
+        ordered_groups = [pg.channel_group for pg in profile_groups]
+
+        # Also include groups that have matching channels but aren't in ProfileGroup
+        explicit_group_ids = {g.id for g in ordered_groups}
+        remaining_qs = Channel.objects.filter(**base_filters).exclude(
+            channel_group_id__in=explicit_group_ids
+        ).values_list('channel_group_id', flat=True).distinct()
+        remaining_groups = list(
+            ChannelGroup.objects.filter(id__in=remaining_qs).order_by('name')
+        )
+        ordered_groups = list(ordered_groups) + remaining_groups
+        groups_by_name_map = None
+    else:
+        # No profile — get all groups that have channels matching filters
+        group_ids = Channel.objects.filter(**base_filters).values_list(
+            'channel_group_id', flat=True
+        ).distinct()
+        ordered_groups = list(ChannelGroup.objects.filter(id__in=group_ids).order_by('name'))
+        groups_by_name_map = None
+
+    # Build the final channel list, group by group
+    all_channels = []
+    for group in ordered_groups:
+        if merge_all_profiles and groups_by_name_map:
+            # Get all groups with the same name and merge their channels
+            group_name = group.name.strip().lower()
+            merged_groups = groups_by_name_map.get(group_name, [group])
+            
+            # Collect channels from all groups with this name
+            for merged_group in merged_groups:
+                group_filters = {**base_filters, 'channel_group': merged_group, 'is_hidden': False}
+                ordering = _get_group_sort_ordering(merged_group)
+                group_channels = list(
+                    Channel.objects.filter(**group_filters)
+                    .select_related('channel_group', 'logo')
+                    .distinct()
+                    .order_by(*ordering)
+                )
+                all_channels.extend(group_channels)
+        else:
+            group_filters = {**base_filters, 'channel_group': group, 'is_hidden': False}
+            ordering = _get_group_sort_ordering(group)
+            group_channels = list(
+                Channel.objects.filter(**group_filters)
+                .select_related('channel_group', 'logo')
+                .distinct()
+                .order_by(*ordering)
+            )
+            all_channels.extend(group_channels)
+
+    # Include channels with no group (channel_group is None)
+    # BUT skip this when merge_all_profiles is True (only show profile-linked groups)
+    if not merge_all_profiles:
+        no_group_filters = {**base_filters, 'channel_group__isnull': True, 'is_hidden': False}
+        no_group_channels = list(
+            Channel.objects.filter(**no_group_filters)
+            .select_related('channel_group', 'logo')
+            .distinct()
+            .order_by('channel_number')
+        )
+        all_channels.extend(no_group_channels)
+
+    return all_channels
+
 
 def m3u_endpoint(request, profile_name=None, user=None):
     logger.debug("m3u_endpoint called: method=%s, profile=%s", request.method, profile_name)
@@ -128,32 +276,43 @@ def generate_m3u(request, profile_name=None, user=None):
             return HttpResponseForbidden("POST requests with body are not allowed, body is: {}".format(request.body.decode()))
 
     if user is not None:
-        if user.user_level < 10:
-            user_profile_count = user.channel_profiles.count()
+        # Apply profile logic to ALL users (including admins)
+        user_profile_count = user.channel_profiles.count()
 
-            # If user has ALL profiles or NO profiles, give unrestricted access
-            if user_profile_count == 0:
-                # No profile filtering - user sees all channels based on user_level
-                filters = {"user_level__lte": user.user_level}
-                # Hide adult content if user preference is set
-                if (user.custom_properties or {}).get('hide_adult_content', False):
-                    filters["is_adult"] = False
-                channels = Channel.objects.filter(**filters).order_by("channel_number")
-            else:
-                # User has specific limited profiles assigned
-                filters = {
-                    "channelprofilemembership__enabled": True,
-                    "user_level__lte": user.user_level,
-                    "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-                }
-                # Hide adult content if user preference is set
-                if (user.custom_properties or {}).get('hide_adult_content', False):
-                    filters["is_adult"] = False
-                channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
+        # Check if any profiles exist in the system
+        profiles_exist = ChannelProfile.objects.exists()
+
+        # If user has NO profiles but profiles exist in system, merge all profiles
+        if user_profile_count == 0 and profiles_exist:
+            # Merge all profiles - user sees all profile groups/channels merged by name
+            base_filters = {"user_level__lte": user.user_level, "is_hidden": False}
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                base_filters["is_adult"] = False
+            
+            # Get channels from all profiles, merged by group name
+            # Need to filter by profile membership
+            base_filters["channelprofilemembership__enabled"] = True
+            channels = _get_channels_sorted_by_groups(base_filters, profile=None, merge_all_profiles=True)
+        elif user_profile_count == 0:
+            # No profiles exist in system - give unrestricted access (old behavior)
+            base_filters = {"user_level__lte": user.user_level, "is_hidden": False}
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                base_filters["is_adult"] = False
+            channels = _get_channels_sorted_by_groups(base_filters)
         else:
-            channels = Channel.objects.filter(user_level__lte=user.user_level).order_by(
-                "channel_number"
-            )
+            # User has specific limited profiles assigned
+            base_filters = {
+                "channelprofilemembership__enabled": True,
+                "user_level__lte": user.user_level,
+                "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
+            }
+            # Hide adult content if user preference is set
+            if (user.custom_properties or {}).get('hide_adult_content', False):
+                base_filters["is_adult"] = False
+            # Pass all user profiles to ensure is_active filtering works correctly
+            channels = _get_channels_sorted_by_groups(base_filters, profile=user.channel_profiles.all())
 
     else:
         if profile_name is not None:
@@ -162,12 +321,13 @@ def generate_m3u(request, profile_name=None, user=None):
             except ChannelProfile.DoesNotExist:
                 logger.warning("Requested channel profile (%s) during m3u generation does not exist", profile_name)
                 raise Http404(f"Channel profile '{profile_name}' not found")
-            channels = Channel.objects.filter(
-                channelprofilemembership__channel_profile=channel_profile,
-                channelprofilemembership__enabled=True
-            ).order_by('channel_number')
+            base_filters = {
+                "channelprofilemembership__channel_profile": channel_profile,
+                "channelprofilemembership__enabled": True,
+            }
+            channels = _get_channels_sorted_by_groups(base_filters, profile=channel_profile)
         else:
-            channels = Channel.objects.order_by("channel_number")
+            channels = _get_channels_sorted_by_groups({"is_hidden": False})
 
     # Check if the request wants to use direct logo URLs instead of cache
     use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
@@ -206,7 +366,8 @@ def generate_m3u(request, profile_name=None, user=None):
 
     # Start building M3U content
     for channel in channels:
-        group_title = channel.channel_group.name if channel.channel_group else "Default"
+        # Normalize group title by stripping whitespace to ensure groups with same name combine
+        group_title = channel.channel_group.name.strip() if channel.channel_group else "Default"
 
         # Format channel number as integer if it has no decimal component
         if channel.channel_number is not None:
@@ -266,7 +427,12 @@ def generate_m3u(request, profile_name=None, user=None):
                 stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
         else:
             # Standard behavior - use proxy URL
-            stream_url = build_absolute_uri_with_port(request, f"/proxy/ts/stream/{channel.uuid}")
+            proxy_path = f"/proxy/ts/stream/{channel.uuid}"
+            if user:
+                xc_password = (user.custom_properties or {}).get("xc_password")
+                if xc_password:
+                    proxy_path += f"?username={user.username}&password={xc_password}"
+            stream_url = build_absolute_uri_with_port(request, proxy_path)
 
         m3u_content += extinf_line + stream_url + "\n"
 
@@ -281,7 +447,7 @@ def generate_m3u(request, profile_name=None, user=None):
             event_type='m3u_download',
             profile=profile_name or 'all',
             user=user.username if user else 'anonymous',
-            channels=channels.count(),
+            channels=len(channels),
             client_ip=client_ip,
             user_agent=user_agent,
         )
@@ -1271,24 +1437,35 @@ def generate_epg(request, profile_name=None, user=None):
                 # If user has ALL profiles or NO profiles, give unrestricted access
                 if user_profile_count == 0:
                     # No profile filtering - user sees all channels based on user_level
-                    filters = {"user_level__lte": user.user_level}
+                    filters = {"user_level__lte": user.user_level, "is_hidden": False}
                     # Hide adult content if user preference is set
                     if (user.custom_properties or {}).get('hide_adult_content', False):
                         filters["is_adult"] = False
                     channels = Channel.objects.filter(**filters).order_by("channel_number")
                 else:
                     # User has specific limited profiles assigned
+                    # Get active group IDs from user's profiles
+                    from apps.channels.models import ProfileGroup
+                    active_group_ids = ProfileGroup.objects.filter(
+                        profile__in=user.channel_profiles.all(),
+                        is_active=True
+                    ).values_list('channel_group_id', flat=True)
+                    
                     filters = {
                         "channelprofilemembership__enabled": True,
                         "user_level__lte": user.user_level,
-                        "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
+                        "channelprofilemembership__channel_profile__in": user.channel_profiles.all(),
+                        "is_hidden": False
                     }
+                    # Only include channels from active groups
+                    if active_group_ids:
+                        filters["channel_group_id__in"] = active_group_ids
                     # Hide adult content if user preference is set
                     if (user.custom_properties or {}).get('hide_adult_content', False):
                         filters["is_adult"] = False
                     channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
             else:
-                channels = Channel.objects.filter(user_level__lte=user.user_level).order_by(
+                channels = Channel.objects.filter(user_level__lte=user.user_level, is_hidden=False).order_by(
                     "channel_number"
                 )
         else:
@@ -1298,12 +1475,26 @@ def generate_epg(request, profile_name=None, user=None):
                 except ChannelProfile.DoesNotExist:
                     logger.warning("Requested channel profile (%s) during epg generation does not exist", profile_name)
                     raise Http404(f"Channel profile '{profile_name}' not found")
-                channels = Channel.objects.filter(
-                    channelprofilemembership__channel_profile=channel_profile,
-                    channelprofilemembership__enabled=True,
-                ).order_by("channel_number")
+                
+                # Get active group IDs from this profile
+                from apps.channels.models import ProfileGroup
+                active_group_ids = ProfileGroup.objects.filter(
+                    profile=channel_profile,
+                    is_active=True
+                ).values_list('channel_group_id', flat=True)
+                
+                filters = {
+                    "channelprofilemembership__channel_profile": channel_profile,
+                    "channelprofilemembership__enabled": True,
+                    "is_hidden": False
+                }
+                # Only include channels from active groups
+                if active_group_ids:
+                    filters["channel_group_id__in"] = active_group_ids
+                
+                channels = Channel.objects.filter(**filters).order_by("channel_number")
             else:
-                channels = Channel.objects.all().order_by("channel_number")
+                channels = Channel.objects.filter(is_hidden=False).order_by("channel_number")
 
         # Check if the request wants to use direct logo URLs instead of cache
         use_cached_logos = request.GET.get('cachedlogos', 'true').lower() != 'false'
@@ -1909,6 +2100,13 @@ def xc_get_user(request):
         return None
 
     user = get_object_or_404(User, username=username)
+    
+    # Check if user is expired
+    from django.utils import timezone
+    if user.expires_at and user.expires_at < timezone.now():
+        logger.warning(f"User {username} attempted XC login but is expired (expired at {user.expires_at})")
+        return None
+
     custom_properties = user.custom_properties or {}
 
     if "xc_password" not in custom_properties:
@@ -1936,6 +2134,13 @@ def xc_get_info(request, full=False):
         hostname = raw_host
         port = "443" if request.is_secure() else "80"
 
+    # Handle expiration date format
+    if user.expires_at:
+        exp_date = str(int(user.expires_at.timestamp()))
+    else:
+        # If no expiration, report a value far in the future or null
+        exp_date = "null" # XC convention for unlimited
+
     info = {
         "user_info": {
             "username": request.GET.get("username"),
@@ -1943,8 +2148,8 @@ def xc_get_info(request, full=False):
             "message": "Dispatcharr XC API",
             "auth": 1,
             "status": "Active",
-            "exp_date": str(int(time.time()) + (90 * 24 * 60 * 60)),
-            "max_connections": str(calculate_tuner_count(minimum=1, unlimited_default=50)),
+            "exp_date": exp_date,
+            "max_connections": str(user.connection_limit),
             "allowed_output_formats": [
                 "ts",
             ],
@@ -2091,29 +2296,76 @@ def xc_xmltv(request):
 
 def xc_get_live_categories(user):
     from django.db.models import Min
+    from collections import defaultdict
     response = []
 
-    if user.user_level < 10:
-        user_profile_count = user.channel_profiles.count()
+    # Apply profile logic to ALL users (including admins)
+    user_profile_count = user.channel_profiles.count()
 
-        # If user has ALL profiles or NO profiles, give unrestricted access
-        if user_profile_count == 0:
-            # No profile filtering - user sees all channel groups
-            channel_groups = ChannelGroup.objects.filter(
-                channels__isnull=False, channels__user_level__lte=user.user_level
-            ).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
-        else:
-            # User has specific limited profiles assigned
-            filters = {
-                "channels__channelprofilemembership__enabled": True,
-                "channels__user_level": 0,
-                "channels__channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-            }
-            channel_groups = ChannelGroup.objects.filter(**filters).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
-    else:
+    # Check if any profiles exist in the system
+    profiles_exist = ChannelProfile.objects.exists()
+
+    # If user has NO profiles but profiles exist in system, merge all profiles
+    if user_profile_count == 0 and profiles_exist:
+        # Get all active ProfileGroups from all profiles
+        all_profile_groups = ProfileGroup.objects.filter(
+            is_active=True
+        ).select_related('channel_group').order_by('order')
+        
+        # Group by channel group name (case-insensitive, trimmed) to merge
+        groups_by_name = defaultdict(list)
+        seen_names = set()
+        merged_groups = []
+        
+        for pg in all_profile_groups:
+            group_name = pg.channel_group.name.strip().lower()
+            groups_by_name[group_name].append(pg.channel_group)
+            
+            # Keep first occurrence for ordering
+            if group_name not in seen_names:
+                seen_names.add(group_name)
+                merged_groups.append(pg.channel_group)
+        
+        # Filter groups that have enabled channels
+        channel_groups = []
+        for group in merged_groups:
+            # Get all groups with the same name
+            group_name = group.name.strip().lower()
+            same_name_groups = groups_by_name[group_name]
+            
+            # Check if any of these groups have enabled channels
+            has_channels = Channel.objects.filter(
+                channel_group__in=same_name_groups,
+                channelprofilemembership__enabled=True,
+                user_level__lte=user.user_level,
+                is_hidden=False
+            ).exists()
+            
+            if has_channels:
+                channel_groups.append(group)
+    elif user_profile_count == 0:
+        # No profiles exist in system - give unrestricted access (old behavior)
         channel_groups = ChannelGroup.objects.filter(
-            channels__isnull=False, channels__user_level__lte=user.user_level
+            channels__isnull=False, 
+            channels__user_level__lte=user.user_level,
+            channels__is_hidden=False
         ).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
+    else:
+        # User has specific limited profiles assigned
+        # Only show groups that are active for the profile(s)
+        active_group_ids = ProfileGroup.objects.filter(
+            profile__in=user.channel_profiles.all(),
+            is_active=True
+        ).values_list('channel_group_id', flat=True)
+
+        filters = {
+            "channels__channelprofilemembership__enabled": True,
+            "channels__user_level": 0,
+            "channels__channelprofilemembership__channel_profile__in": user.channel_profiles.all(),
+            "channels__is_hidden": False,
+            "id__in": active_group_ids
+        }
+        channel_groups = ChannelGroup.objects.filter(**filters).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
 
     for group in channel_groups:
         response.append(
@@ -2128,41 +2380,89 @@ def xc_get_live_categories(user):
 
 
 def xc_get_live_streams(request, user, category_id=None):
+    from collections import defaultdict
     streams = []
 
-    if user.user_level < 10:
-        user_profile_count = user.channel_profiles.count()
+    # Apply profile logic to ALL users (including admins)
+    user_profile_count = user.channel_profiles.count()
 
-        # If user has ALL profiles or NO profiles, give unrestricted access
-        if user_profile_count == 0:
-            # No profile filtering - user sees all channels based on user_level
-            filters = {"user_level__lte": user.user_level}
-            if category_id is not None:
-                filters["channel_group__id"] = category_id
-            # Hide adult content if user preference is set
-            if (user.custom_properties or {}).get('hide_adult_content', False):
-                filters["is_adult"] = False
-            channels = Channel.objects.filter(**filters).order_by("channel_number")
-        else:
-            # User has specific limited profiles assigned
-            filters = {
-                "channelprofilemembership__enabled": True,
-                "user_level__lte": user.user_level,
-                "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-            }
-            if category_id is not None:
-                filters["channel_group__id"] = category_id
-            # Hide adult content if user preference is set
-            if (user.custom_properties or {}).get('hide_adult_content', False):
-                filters["is_adult"] = False
-            channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
+    # Check if any profiles exist in the system
+    profiles_exist = ChannelProfile.objects.exists()
+
+    # If user has NO profiles but profiles exist in system, merge all profiles
+    if user_profile_count == 0 and profiles_exist:
+        # Merge all profiles - user sees all enabled channels
+        filters = {
+            "channelprofilemembership__enabled": True,
+            "user_level__lte": user.user_level,
+            "is_hidden": False
+        }
+        
+        if category_id is not None:
+            # Find the group and all groups with the same name
+            try:
+                requested_group = ChannelGroup.objects.get(id=category_id)
+                group_name = requested_group.name.strip().lower()
+                
+                # Find all groups with the same name
+                same_name_groups = ChannelGroup.objects.filter(
+                    name__iexact=requested_group.name.strip()
+                )
+                
+                # Filter channels from all groups with this name
+                filters["channel_group__in"] = same_name_groups
+            except ChannelGroup.DoesNotExist:
+                # Invalid category_id, return empty
+                return []
+        
+        # Hide adult content if user preference is set
+        if (user.custom_properties or {}).get('hide_adult_content', False):
+            filters["is_adult"] = False
+        
+        channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
+    elif user_profile_count == 0:
+        # No profiles exist in system - give unrestricted access (old behavior)
+        filters = {"user_level__lte": user.user_level, "is_hidden": False}
+        if category_id is not None:
+            filters["channel_group__id"] = category_id
+        # Hide adult content if user preference is set
+        if (user.custom_properties or {}).get('hide_adult_content', False):
+            filters["is_adult"] = False
+        channels = Channel.objects.filter(**filters).order_by("channel_number")
     else:
-        if not category_id:
-            channels = Channel.objects.filter(user_level__lte=user.user_level).order_by("channel_number")
+        # User has specific limited profiles assigned
+        # Get active group IDs from user's profiles
+        active_group_ids = ProfileGroup.objects.filter(
+            profile__in=user.channel_profiles.all(),
+            is_active=True
+        ).values_list('channel_group_id', flat=True)
+        
+        filters = {
+            "channelprofilemembership__enabled": True,
+            "user_level__lte": user.user_level,
+            "channelprofilemembership__channel_profile__in": user.channel_profiles.all(),
+            "is_hidden": False
+        }
+        
+        if category_id is not None:
+            # Also verify the group is active for at least one of the user's profiles
+            is_active_group = ProfileGroup.objects.filter(
+                profile__in=user.channel_profiles.all(),
+                channel_group_id=category_id,
+                is_active=True
+            ).exists()
+            if not is_active_group:
+                return [] # Or handle as error/empty
+            filters["channel_group__id"] = category_id
         else:
-            channels = Channel.objects.filter(
-                channel_group__id=category_id, user_level__lte=user.user_level
-            ).order_by("channel_number")
+            # No specific category - only include channels from active groups
+            if active_group_ids:
+                filters["channel_group_id__in"] = active_group_ids
+        
+        # Hide adult content if user preference is set
+        if (user.custom_properties or {}).get('hide_adult_content', False):
+            filters["is_adult"] = False
+        channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
 
     # Build collision-free mapping for XC clients (which require integers)
     # This ensures channels with float numbers don't conflict with existing integers
@@ -2228,37 +2528,59 @@ def xc_get_epg(request, user, short=False):
         raise Http404()
 
     channel = None
-    if user.user_level < 10:
-        user_profile_count = user.channel_profiles.count()
+    # Apply profile logic to ALL users (including admins)
+    user_profile_count = user.channel_profiles.count()
 
-        # If user has ALL profiles or NO profiles, give unrestricted access
-        if user_profile_count == 0:
-            # No profile filtering - user sees all channels based on user_level
-            filters = {
-                "id": channel_id,
-                "user_level__lte": user.user_level
-            }
-            # Hide adult content if user preference is set
-            if (user.custom_properties or {}).get('hide_adult_content', False):
-                filters["is_adult"] = False
-            channel = Channel.objects.filter(**filters).first()
-        else:
-            # User has specific limited profiles assigned
-            filters = {
-                "id": channel_id,
-                "channelprofilemembership__enabled": True,
-                "user_level__lte": user.user_level,
-                "channelprofilemembership__channel_profile__in": user.channel_profiles.all()
-            }
-            # Hide adult content if user preference is set
-            if (user.custom_properties or {}).get('hide_adult_content', False):
-                filters["is_adult"] = False
-            channel = Channel.objects.filter(**filters).distinct().first()
+    # Check if any profiles exist in the system
+    profiles_exist = ChannelProfile.objects.exists()
 
-        if not channel:
-            raise Http404()
+    # If user has NO profiles but profiles exist in system, merge all profiles
+    if user_profile_count == 0 and profiles_exist:
+        # Merge all profiles - user sees all enabled channels
+        filters = {
+            "id": channel_id,
+            "channelprofilemembership__enabled": True,
+            "user_level__lte": user.user_level,
+            "is_hidden": False
+        }
+        # Hide adult content if user preference is set
+        if (user.custom_properties or {}).get('hide_adult_content', False):
+            filters["is_adult"] = False
+        channel = Channel.objects.filter(**filters).distinct().first()
+    elif user_profile_count == 0:
+        # No profiles exist in system - give unrestricted access (old behavior)
+        filters = {
+            "id": channel_id,
+            "user_level__lte": user.user_level,
+            "is_hidden": False
+        }
+        # Hide adult content if user preference is set
+        if (user.custom_properties or {}).get('hide_adult_content', False):
+            filters["is_adult"] = False
+        channel = Channel.objects.filter(**filters).first()
     else:
-        channel = get_object_or_404(Channel, id=channel_id)
+        # User has specific limited profiles assigned
+        # Get active group IDs from user's profiles
+        active_group_ids = ProfileGroup.objects.filter(
+            profile__in=user.channel_profiles.all(),
+            is_active=True
+        ).values_list('channel_group_id', flat=True)
+        
+        filters = {
+            "id": channel_id,
+            "channelprofilemembership__enabled": True,
+            "user_level__lte": user.user_level,
+            "channelprofilemembership__channel_profile__in": user.channel_profiles.all(),
+            "is_hidden": False
+        }
+        # Only include channels from active groups
+        if active_group_ids:
+            filters["channel_group_id__in"] = active_group_ids
+        
+        # Hide adult content if user preference is set
+        if (user.custom_properties or {}).get('hide_adult_content', False):
+            filters["is_adult"] = False
+        channel = Channel.objects.filter(**filters).distinct().first()
 
     if not channel:
         raise Http404()
@@ -2267,7 +2589,8 @@ def xc_get_epg(request, user, short=False):
     # This must match the logic in xc_get_live_streams to ensure consistency
     # Get all channels in the same category for collision detection
     category_channels = Channel.objects.filter(
-        channel_group=channel.channel_group
+        channel_group=channel.channel_group,
+        is_hidden=False
     ).order_by("channel_number")
 
     channel_num_map = {}

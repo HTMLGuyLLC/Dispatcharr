@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     "apps.proxy.apps.ProxyConfig",
     "apps.proxy.ts_proxy",
     "apps.vod.apps.VODConfig",
+    "apps.xtream",
     "core",
     "daphne",
     "drf_spectacular",
@@ -174,7 +175,7 @@ REST_FRAMEWORK = {
 SPECTACULAR_SETTINGS = {
     "TITLE": "Dispatcharr API",
     "DESCRIPTION": "API documentation for Dispatcharr",
-    "VERSION": "1.0.0",
+    "VERSION": "1.1.2",
     "SERVE_INCLUDE_SCHEMA": False,
     "SECURITY": [{"BearerAuth": []}],
     "COMPONENTS": {

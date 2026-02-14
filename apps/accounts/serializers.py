@@ -47,6 +47,8 @@ class UserSerializer(serializers.ModelSerializer):
             "date_joined",
             "first_name",
             "last_name",
+            "expires_at",
+            "connection_limit",
         ]
 
     def create(self, validated_data):

@@ -3,9 +3,12 @@ import API from '../../api';
 import UserForm from '../forms/User';
 import useUsersStore from '../../store/users';
 import useAuthStore from '../../store/auth';
+import useChannelsStore from '../../store/channels';
 import { USER_LEVELS, USER_LEVEL_LABELS } from '../../constants';
 import useWarningsStore from '../../store/warnings';
-import { SquarePlus, SquareMinus, SquarePen, Eye, EyeOff } from 'lucide-react';
+import { SquarePlus, SquareMinus, SquarePen, Eye, EyeOff, Users, Copy } from 'lucide-react';
+import UserBulkGenerate from '../forms/UserBulkGenerate';
+import useSettingsStore from '../../store/settings';
 import {
   ActionIcon,
   Box,
@@ -22,8 +25,10 @@ import { CustomTable, useTable } from './CustomTable';
 import ConfirmationDialog from '../ConfirmationDialog';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import { useDateTimeFormat, format } from '../../utils/dateTimeUtils.js';
+import { notifications } from '@mantine/notifications';
+import dayjs from 'dayjs';
 
-const UserRowActions = ({ theme, row, editUser, deleteUser }) => {
+const UserRowActions = ({ theme, row, editUser, deleteUser, copyCredentials }) => {
   const [tableSize, _] = useLocalStorage('table-size', 'default');
   const authUser = useAuthStore((s) => s.user);
 
@@ -35,6 +40,10 @@ const UserRowActions = ({ theme, row, editUser, deleteUser }) => {
     deleteUser(row.original.id);
   }, [row.original.id, deleteUser]);
 
+  const onCopy = useCallback(() => {
+    copyCredentials(row.original);
+  }, [row.original, copyCredentials]);
+
   const iconSize =
     tableSize == 'default' ? 'sm' : tableSize == 'compact' ? 'xs' : 'md';
 
@@ -44,9 +53,19 @@ const UserRowActions = ({ theme, row, editUser, deleteUser }) => {
         <ActionIcon
           size={iconSize}
           variant="transparent"
+          color={theme.tailwind.blue[4]}
+          onClick={onCopy}
+          title="Copy Credentials"
+        >
+          <Copy size="18" />
+        </ActionIcon>
+
+        <ActionIcon
+          size={iconSize}
+          variant="transparent"
           color={theme.tailwind.yellow[3]}
           onClick={onEdit}
-          disabled={authUser.user_level !== USER_LEVELS.ADMIN}
+          disabled={authUser.user_level < USER_LEVELS.RESELLER}
         >
           <SquarePen size="18" />
         </ActionIcon>
@@ -57,7 +76,7 @@ const UserRowActions = ({ theme, row, editUser, deleteUser }) => {
           color={theme.tailwind.red[6]}
           onClick={onDelete}
           disabled={
-            authUser.user_level !== USER_LEVELS.ADMIN ||
+            authUser.user_level < USER_LEVELS.RESELLER ||
             authUser.id === row.original.id
           }
         >
@@ -79,6 +98,7 @@ const UsersTable = () => {
   const authUser = useAuthStore((s) => s.user);
   const isWarningSuppressed = useWarningsStore((s) => s.isWarningSuppressed);
   const suppressWarning = useWarningsStore((s) => s.suppressWarning);
+  const env_mode = useSettingsStore((s) => s.environment.env_mode);
 
   /**
    * useState
@@ -91,6 +111,7 @@ const UsersTable = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [visiblePasswords, setVisiblePasswords] = useState({});
+  const [bulkGenerateOpen, setBulkGenerateOpen] = useState(false);
 
   /**
    * Functions
@@ -134,6 +155,66 @@ const UsersTable = () => {
     [users, isWarningSuppressed, executeDeleteUser]
   );
 
+  const copyCredentials = useCallback((user) => {
+    const hostname = window.location.hostname;
+    const port = window.location.port;
+    const protocol = window.location.protocol;
+
+    // Only include port if it's not the default for the protocol
+    let fullHostname = `${protocol}//${hostname}`;
+    let effectivePort = port;
+    if (env_mode === 'dev' && port === '9191') {
+      effectivePort = '5656';
+    }
+
+    if (effectivePort && effectivePort !== '80' && effectivePort !== '443') {
+      fullHostname += `:${effectivePort}`;
+    }
+
+    // Get profile names
+    const profiles = useChannelsStore.getState().profiles;
+    let profileNames = 'All Profiles';
+    if (user.channel_profiles && user.channel_profiles.length > 0) {
+      profileNames = user.channel_profiles
+        .map(id => profiles[id]?.name)
+        .filter(Boolean)
+        .join(', ');
+    }
+
+    // Format expiration date
+    let expirationText = 'Never';
+    if (user.expires_at) {
+      expirationText = dayjs(user.expires_at).format('MMMM D, YYYY [at] h:mm A');
+    }
+
+    // Get XC password from custom_properties
+    const customProps = user.custom_properties || {};
+    const xcPassword = customProps.xc_password || 'Not set';
+
+    const credentialsText = `Here's your Xtream login details!
+
+Hostname: ${fullHostname}
+Username: ${user.username}
+Password: ${xcPassword}
+Connections: ${user.connection_limit || 1}
+Expiration: ${expirationText}
+Profile(s): ${profileNames}`;
+
+    navigator.clipboard.writeText(credentialsText).then(() => {
+      notifications.show({
+        title: 'Credentials Copied!',
+        message: `Credentials for ${user.username} copied to clipboard`,
+        color: 'green',
+      });
+    }).catch(() => {
+      notifications.show({
+        title: 'Copy Failed',
+        message: 'Failed to copy credentials to clipboard',
+        color: 'red',
+      });
+    });
+  }, []);
+
   /**
    * useMemo
    */
@@ -146,6 +227,15 @@ const UsersTable = () => {
         cell: ({ getValue }) => (
           <Text size="sm">{USER_LEVEL_LABELS[getValue()]}</Text>
         ),
+      },
+      {
+        header: 'Credits',
+        accessorKey: 'credits',
+        size: 80,
+        cell: ({ getValue, row }) => {
+          if (row.original.user_level !== USER_LEVELS.RESELLER) return '-';
+          return <Text size="sm">{getValue() || 0}</Text>;
+        },
       },
       {
         header: 'Username',
@@ -221,6 +311,33 @@ const UsersTable = () => {
         },
       },
       {
+        header: 'Conn. Limit',
+        accessorKey: 'connection_limit',
+        size: 100,
+        cell: ({ getValue }) => <Text size="sm">{getValue() || 1}</Text>,
+      },
+      {
+        header: 'Expires',
+        accessorKey: 'expires_at',
+        size: 175,
+        cell: ({ getValue }) => {
+          const date = getValue();
+          if (!date)
+            return (
+              <Text size="sm" c="dimmed">
+                Never
+              </Text>
+            );
+          const isExpired = new Date(date) < new Date();
+          return (
+            <Text size="sm" c={isExpired ? 'red' : 'inherit'}>
+              {format(date, fullDateTimeFormat)}
+              {isExpired && ' (Expired)'}
+            </Text>
+          );
+        },
+      },
+      {
         header: 'XC Password',
         accessorKey: 'custom_properties',
         size: 125,
@@ -267,6 +384,7 @@ const UsersTable = () => {
             row={row}
             editUser={editUser}
             deleteUser={deleteUser}
+            copyCredentials={copyCredentials}
           />
         ),
       },
@@ -275,6 +393,7 @@ const UsersTable = () => {
       theme,
       editUser,
       deleteUser,
+      copyCredentials,
       visiblePasswords,
       togglePasswordVisibility,
       fullDateFormat,
@@ -332,7 +451,7 @@ const UsersTable = () => {
           minHeight: '100vh',
         }}
       >
-        <Stack gap="md" style={{ maxWidth: '1200px', width: '100%' }}>
+        <Stack gap="md" style={{ maxWidth: '1600px', width: '100%' }}>
           <Flex style={{ alignItems: 'center', paddingBottom: 10 }} gap={15}>
             <Text
               style={{
@@ -365,22 +484,40 @@ const UsersTable = () => {
                 borderBottom: '1px solid #3f3f46',
               }}
             >
-              <Button
-                leftSection={<SquarePlus size={18} />}
-                variant="light"
-                size="xs"
-                onClick={() => editUser()}
-                p={5}
-                color={theme.tailwind.green[5]}
-                style={{
-                  borderWidth: '1px',
-                  borderColor: theme.tailwind.green[5],
-                  color: 'white',
-                }}
-                disabled={authUser.user_level !== USER_LEVELS.ADMIN}
-              >
-                Add User
-              </Button>
+              <Group gap="xs">
+                <Button
+                  leftSection={<Users size={18} />}
+                  variant="light"
+                  size="xs"
+                  onClick={() => setBulkGenerateOpen(true)}
+                  p={5}
+                  color={theme.tailwind.blue[5]}
+                  style={{
+                    borderWidth: '1px',
+                    borderColor: theme.tailwind.blue[5],
+                    color: 'white',
+                  }}
+                  disabled={authUser.user_level < USER_LEVELS.RESELLER}
+                >
+                  Bulk Generate
+                </Button>
+                <Button
+                  leftSection={<SquarePlus size={18} />}
+                  variant="light"
+                  size="xs"
+                  onClick={() => editUser()}
+                  p={5}
+                  color={theme.tailwind.green[5]}
+                  style={{
+                    borderWidth: '1px',
+                    borderColor: theme.tailwind.green[5],
+                    color: 'white',
+                  }}
+                  disabled={authUser.user_level < USER_LEVELS.RESELLER}
+                >
+                  Add User
+                </Button>
+              </Group>
             </Box>
 
             {/* Table container */}
@@ -433,6 +570,11 @@ This action cannot be undone.`}
         actionKey="delete-user"
         onSuppressChange={suppressWarning}
         size="md"
+      />
+
+      <UserBulkGenerate
+        isOpen={bulkGenerateOpen}
+        onClose={() => setBulkGenerateOpen(false)}
       />
     </>
   );
