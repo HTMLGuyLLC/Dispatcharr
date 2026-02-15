@@ -2169,7 +2169,7 @@ def xc_get_info(request, full=False):
         info['categories'] = {
             "series": [],
             "movie": [],
-            "live": xc_get_live_categories(user),
+            "live": xc_get_live_categories(request, user),
         }
         info['available_channels'] = {channel["stream_id"]: channel for channel in xc_get_live_streams(request, user, request.GET.get("category_id"))}
 
@@ -2187,7 +2187,7 @@ def xc_player_api(request, full=False):
         return JsonResponse({'error': 'Unauthorized'}, status=401)
 
     if action == "get_live_categories":
-        return JsonResponse(xc_get_live_categories(user), safe=False)
+        return JsonResponse(xc_get_live_categories(request, user), safe=False)
     elif action == "get_live_streams":
         return JsonResponse(xc_get_live_streams(request, user, request.GET.get("category_id")), safe=False)
     elif action == "get_short_epg":
@@ -2294,7 +2294,7 @@ def xc_xmltv(request):
     return generate_epg(request, None, user)
 
 
-def xc_get_live_categories(user):
+def xc_get_live_categories(request, user):
     from django.db.models import Min
     from collections import defaultdict
     response = []
@@ -2713,7 +2713,7 @@ def xc_get_vod_categories(user):
     categories = VODCategory.objects.filter(
         category_type='movie',
         m3umovierelation__m3u_account__is_active=True
-    ).distinct().select_related('image').order_by(Lower("name"))
+    ).distinct().order_by(Lower("name"))
 
     for category in categories:
         response.append({
@@ -2801,7 +2801,7 @@ def xc_get_series_categories(user):
     categories = VODCategory.objects.filter(
         category_type='series',
         m3useriesrelation__m3u_account__is_active=True
-    ).distinct().select_related('image').order_by(Lower("name"))
+    ).distinct().order_by(Lower("name"))
 
     for category in categories:
         response.append({

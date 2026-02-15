@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.1.1] - 2026-02-15
+
+### Fixed
+- Fixed a `NameError` in XC API `get_live_categories` where `request` was not defined.
+- Fixed a `FieldError` in XC API `get_vod_categories` and `get_series_categories` caused by non-existent `image` field in `VODCategory` model.
+
 ## [0.1.0] - 2026-02-14
 
 ### Added
