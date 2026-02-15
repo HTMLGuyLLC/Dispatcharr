@@ -61,7 +61,7 @@ Build custom integrations using Dispatcharr's robust plugin system. Automate tas
 ## ✨ Why You'll Love Dispatcharr
 
 ✅ **Stream Proxy & Relay** — Intercept and proxy IPTV streams with real-time client management\
-✅ **Full Xtream Codes API** — Complete XC API implementation for broad client compatibility\
+✅ **Enhanced XC API Data** — Included UUIDs in API responses to support seamless dashboard URL reconstruction\
 ✅ **Advanced User Management** — Expiration dates, per-user connection limits, and bulk generation\
 ✅ **EPG Matching & Generation** — Auto-match EPG to channels or generate custom TV guides\
 ✅ **Video on Demand** — Stream movies and TV series with rich metadata and IMDB/TMDB integration\

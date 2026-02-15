@@ -2310,7 +2310,7 @@ def xc_get_live_categories(user):
         # Get all active ProfileGroups from all profiles
         all_profile_groups = ProfileGroup.objects.filter(
             is_active=True
-        ).select_related('channel_group').order_by('order')
+        ).select_related('channel_group', 'channel_group__image').order_by('order')
         
         # Group by channel group name (case-insensitive, trimmed) to merge
         groups_by_name = defaultdict(list)
@@ -2349,7 +2349,7 @@ def xc_get_live_categories(user):
             channels__isnull=False, 
             channels__user_level__lte=user.user_level,
             channels__is_hidden=False
-        ).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
+        ).distinct().select_related('image').annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
     else:
         # User has specific limited profiles assigned
         # Only show groups that are active for the profile(s)
@@ -2365,13 +2365,20 @@ def xc_get_live_categories(user):
             "channels__is_hidden": False,
             "id__in": active_group_ids
         }
-        channel_groups = ChannelGroup.objects.filter(**filters).distinct().annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
+        channel_groups = ChannelGroup.objects.filter(**filters).distinct().select_related('image').annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
 
     for group in channel_groups:
         response.append(
             {
                 "category_id": str(group.id),
                 "category_name": group.name,
+                "category_icon": (
+                    None if not group.image
+                    else build_absolute_uri_with_port(
+                        request,
+                        reverse("api:channels:logo-cache", args=[group.image.id])
+                    )
+                ),
                 "parent_id": 0,
             }
         )
@@ -2419,7 +2426,7 @@ def xc_get_live_streams(request, user, category_id=None):
         if (user.custom_properties or {}).get('hide_adult_content', False):
             filters["is_adult"] = False
         
-        channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
+        channels = Channel.objects.filter(**filters).distinct().select_related('logo').order_by("channel_number")
     elif user_profile_count == 0:
         # No profiles exist in system - give unrestricted access (old behavior)
         filters = {"user_level__lte": user.user_level, "is_hidden": False}
@@ -2428,7 +2435,7 @@ def xc_get_live_streams(request, user, category_id=None):
         # Hide adult content if user preference is set
         if (user.custom_properties or {}).get('hide_adult_content', False):
             filters["is_adult"] = False
-        channels = Channel.objects.filter(**filters).order_by("channel_number")
+        channels = Channel.objects.filter(**filters).select_related('logo').order_by("channel_number")
     else:
         # User has specific limited profiles assigned
         # Get active group IDs from user's profiles
@@ -2462,7 +2469,7 @@ def xc_get_live_streams(request, user, category_id=None):
         # Hide adult content if user preference is set
         if (user.custom_properties or {}).get('hide_adult_content', False):
             filters["is_adult"] = False
-        channels = Channel.objects.filter(**filters).distinct().order_by("channel_number")
+        channels = Channel.objects.filter(**filters).distinct().select_related('logo').order_by("channel_number")
 
     # Build collision-free mapping for XC clients (which require integers)
     # This ensures channels with float numbers don't conflict with existing integers
@@ -2499,6 +2506,7 @@ def xc_get_live_streams(request, user, category_id=None):
                 "name": channel.name,
                 "stream_type": "live",
                 "stream_id": channel.id,
+                "stream_uuid": str(channel.uuid),
                 "stream_icon": (
                     None
                     if not channel.logo
@@ -2516,6 +2524,7 @@ def xc_get_live_streams(request, user, category_id=None):
                 "tv_archive": 0,
                 "direct_source": "",
                 "tv_archive_duration": 0,
+                "uuid": str(channel.uuid),
             }
         )
 
@@ -2704,7 +2713,7 @@ def xc_get_vod_categories(user):
     categories = VODCategory.objects.filter(
         category_type='movie',
         m3umovierelation__m3u_account__is_active=True
-    ).distinct().order_by(Lower("name"))
+    ).distinct().select_related('image').order_by(Lower("name"))
 
     for category in categories:
         response.append({
@@ -2755,6 +2764,7 @@ def xc_get_vod_streams(request, user, category_id=None):
             "name": movie.name,
             "stream_type": "movie",
             "stream_id": movie.id,
+            "stream_uuid": str(movie.uuid),
             "stream_icon": (
                 None if not movie.logo
                 else build_absolute_uri_with_port(
@@ -2775,6 +2785,7 @@ def xc_get_vod_streams(request, user, category_id=None):
             "container_extension": relation.container_extension or "mp4",
             "custom_sid": None,
             "direct_source": "",
+            "uuid": str(movie.uuid),
         })
 
     return streams
@@ -2790,7 +2801,7 @@ def xc_get_series_categories(user):
     categories = VODCategory.objects.filter(
         category_type='series',
         m3useriesrelation__m3u_account__is_active=True
-    ).distinct().order_by(Lower("name"))
+    ).distinct().select_related('image').order_by(Lower("name"))
 
     for category in categories:
         response.append({
@@ -2825,6 +2836,7 @@ def xc_get_series(request, user, category_id=None):
             "num": relation.id,  # Use relation ID
             "name": series.name,
             "series_id": relation.id,  # Use relation ID
+            "series_uuid": str(series.uuid),
             "cover": (
                 None if not series.logo
                 else build_absolute_uri_with_port(
@@ -2846,6 +2858,7 @@ def xc_get_series(request, user, category_id=None):
             "episode_run_time": series.custom_properties.get('episode_run_time', '') if series.custom_properties else "",
             "category_id": str(relation.category.id) if relation.category else "0",
             "category_ids": [int(relation.category.id)] if relation.category else [],
+            "uuid": str(series.uuid),
         })
 
     return series_list
@@ -2947,6 +2960,7 @@ def xc_get_series_info(request, user, series_id):
             "added": added_timestamp,
             "custom_sid": None,
             "direct_source": "",
+            "uuid": str(episode.uuid),
             "info": {
                 "id": int(episode.id),
                 "name": episode.name,
@@ -3029,6 +3043,7 @@ def xc_get_series_info(request, user, series_id):
         'seasons': seasons_list,
         "info": {
             "name": series_data['name'],
+            "series_uuid": str(series.uuid),
             "cover": (
                 None if not series.logo
                 else build_absolute_uri_with_port(
@@ -3192,6 +3207,7 @@ def xc_get_vod_info(request, user, vod_id):
         },
         "movie_data": {
             "stream_id": movie.id,
+            "stream_uuid": str(movie.uuid),
             "name": movie.name,
             "added": int(movie_relation.created_at.timestamp()),
             "category_id": str(movie_relation.category.id) if movie_relation.category else "0",

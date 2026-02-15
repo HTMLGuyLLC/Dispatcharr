@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.1.0] - 2026-02-14
+
+### Added
+- Included `uuid` in Xtream Codes (XC) API responses for Live, VOD, and Series/Episodes. This allows external clients to reconstruct the exact same URLs used in the Dispatcharr dashboard.
+- Added `series_uuid` to single series info and `stream_uuid` to movie info in the XC API for better data mapping.
+
 ## [0.0.2] - 2026-02-14
 
 ### Changed
