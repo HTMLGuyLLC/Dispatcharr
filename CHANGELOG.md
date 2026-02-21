@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-02-21
+
 ### Added
 
 - New HLS output proxy endpoint (`/proxy/hls/stream/<uuid>`) that transcodes source TS streams to proper HLS with AC3/EAC3 audio converted to AAC. Enables Roku Ultra and other devices that lack AC3 decoding support.
