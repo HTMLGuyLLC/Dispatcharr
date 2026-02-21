@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.3.0] - 2026-02-20
+
+### Added
+- Backend: Added `_build_xc_channel_num_map` helper to produce collision-free integer channel numbers for XC clients.
+- Backend: Standardized host/port/scheme resolution and added/normalized server/user fields required by XC responses.
+- Frontend: `GroupChannelsPanel` now supports inline double-click rename with keyboard handling and focus behavior.
+- Frontend: Added defensive null-safety for playlists in `GroupChannelsPanel` and `StreamLibraryPanel`.
+
+### Changed
+- Backend: Optimized queries using `select_related` for channel groups and cached default group lookup.
+- Backend: Prefetched M3U episode relations in `xc_get_series_info` to avoid N+1 queries.
+- Frontend: `M3UProfile` now avoids redundant websocket sends and debounces change detection.
+- Frontend: Replaced `dangerouslySetInnerHTML` with safe React elements for highlighting in `M3UProfile`.
+- Frontend: Debounced `max_streams` updates in `M3UProfiles`.
+- Tables (EPGs, M3Us, StreamProfiles): Various optimizations including strict equality checks, improved sorting, and memoization.
+- Stores: Playlists store now treats non-array API responses as an empty array.
+
+### Fixed
+- Frontend: Fixed `User-Agent` select binding in `StreamProfile`.
+- Stores: Fixed playlist removal to also clear related profiles and corrected a typo in the `streamProfiles` removal API.
+- General: Added defensive null-safety and normalized API responses to avoid runtime errors.
+
 ## [0.2.0] - 2026-02-20
 
 ### Added
