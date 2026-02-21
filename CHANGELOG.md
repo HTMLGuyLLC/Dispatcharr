@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Backend: New `match-epg-from-streams` endpoint to bulk-match channels to EPG data using their primary stream's `tvg_id`. Fixes channels that were created before the auto-update fix.
+
 ## [0.7.1] - 2026-02-21
 
 ### Fixed

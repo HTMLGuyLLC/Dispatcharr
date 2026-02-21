@@ -1200,6 +1200,93 @@ class ChannelViewSet(viewsets.ModelViewSet):
             "channel_count": len(channel_ids)
         })
 
+    @extend_schema(
+        methods=["POST"],
+        description=(
+            "Match channels to EPG data using their primary stream's tvg_id. "
+            "For each channel, looks up the first stream's tvg_id and finds a "
+            "matching EPGData entry to set as the channel's epg_data. "
+            "Optionally pass channel_ids to limit scope."
+        ),
+        request=inline_serializer(
+            name="MatchEpgFromStreamsRequest",
+            fields={
+                "channel_ids": serializers.ListField(
+                    child=serializers.IntegerField(),
+                    required=False,
+                    help_text="Optional list of channel IDs to process. If empty, processes all channels.",
+                ),
+            },
+        ),
+    )
+    @action(detail=False, methods=["post"], url_path="match-epg-from-streams")
+    def match_epg_from_streams(self, request):
+        """
+        Bulk-match channels to EPGData entries based on their primary stream's tvg_id.
+        This backfills the epg_data FK so EPG program parsing can find mapped channels.
+        """
+        from apps.epg.models import EPGData
+
+        channel_ids = request.data.get("channel_ids", [])
+
+        if channel_ids:
+            channels = Channel.objects.filter(id__in=channel_ids)
+        else:
+            channels = Channel.objects.all()
+
+        # Build a lookup of tvg_id -> EPGData (first match)
+        epg_lookup = {}
+        for epg in EPGData.objects.all().only("id", "tvg_id"):
+            if epg.tvg_id and epg.tvg_id not in epg_lookup:
+                epg_lookup[epg.tvg_id] = epg
+
+        updated_count = 0
+        already_set = 0
+        no_match = 0
+        channels_to_update = []
+
+        for channel in channels.prefetch_related("streams"):
+            # Get the primary stream (first in order)
+            primary_cs = channel.channelstream_set.order_by("order").first()
+            if not primary_cs:
+                no_match += 1
+                continue
+
+            stream = primary_cs.stream
+            tvg_id = stream.tvg_id
+
+            # Also update the channel's tvg_id if it doesn't match the stream
+            if tvg_id and channel.tvg_id != tvg_id:
+                channel.tvg_id = tvg_id
+
+            if not tvg_id:
+                no_match += 1
+                continue
+
+            epg = epg_lookup.get(tvg_id)
+            if not epg:
+                no_match += 1
+                continue
+
+            if channel.epg_data_id == epg.id:
+                already_set += 1
+                continue
+
+            channel.epg_data = epg
+            channels_to_update.append(channel)
+            updated_count += 1
+
+        if channels_to_update:
+            Channel.objects.bulk_update(channels_to_update, ["epg_data", "tvg_id"], batch_size=500)
+
+        return Response({
+            "message": f"Matched {updated_count} channels to EPG data",
+            "updated": updated_count,
+            "already_set": already_set,
+            "no_match": no_match,
+            "total_processed": updated_count + already_set + no_match,
+        })
+
     @action(detail=False, methods=["get"], url_path="ids")
     def get_ids(self, request, *args, **kwargs):
         # Get the filtered queryset
