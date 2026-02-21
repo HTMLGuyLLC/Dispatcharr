@@ -2042,6 +2042,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     dest_by_name.setdefault(norm_name, []).append(s)
 
         remapped_count = 0
+        remapped_channels = set()
         errors = []
 
         channel_ids = list(channel_qs.values_list("id", flat=True))
@@ -2106,6 +2107,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                         cs.save(update_fields=["stream_id"])
 
                     remapped_count += 1
+                    remapped_channels.add(cs.channel)
                 else:
                     # Name match: add ALL matching destination streams to the channel
                     # since name matches may yield multiple valid streams (e.g. HD/SD, 24/7 variants)
@@ -2136,6 +2138,19 @@ class ChannelViewSet(viewsets.ModelViewSet):
                         cs.delete()
 
                     remapped_count += 1
+                    remapped_channels.add(cs.channel)
+
+        # Auto-update EPG for channels whose primary stream changed
+        if remapped_channels:
+            from apps.channels.serializers import ChannelSerializer
+            for channel in remapped_channels:
+                primary_cs = ChannelStream.objects.filter(
+                    channel=channel
+                ).order_by("order").first()
+                if primary_cs:
+                    ChannelSerializer._update_epg_from_stream(
+                        channel, primary_cs.stream_id
+                    )
 
         return Response({
             "success": True,

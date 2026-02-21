@@ -425,6 +425,10 @@ class ChannelSerializer(serializers.ModelSerializer):
             ]
             print(normalized_ids)
 
+            # Track old primary stream ID (first in order) for EPG update check
+            old_primary_cs = instance.channelstream_set.order_by("order").first()
+            old_primary_stream_id = old_primary_cs.stream_id if old_primary_cs else None
+
             # Get current mapping of stream_id -> ChannelStream
             current_links = {
                 cs.stream_id: cs for cs in instance.channelstream_set.all()
@@ -451,7 +455,44 @@ class ChannelSerializer(serializers.ModelSerializer):
                         channel=instance, stream_id=stream_id, order=order
                     )
 
+            # Auto-update EPG when primary stream changes
+            new_primary_stream_id = normalized_ids[0] if normalized_ids else None
+            if new_primary_stream_id and new_primary_stream_id != old_primary_stream_id:
+                self._update_epg_from_stream(instance, new_primary_stream_id)
+
         return instance
+
+    @staticmethod
+    def _update_epg_from_stream(channel, stream_id):
+        """
+        Update a channel's tvg_id and epg_data based on a stream's tvg_id.
+        Called when the primary stream changes so EPG stays in sync.
+        """
+        try:
+            stream = Stream.objects.get(pk=stream_id)
+        except Stream.DoesNotExist:
+            return
+
+        update_fields = []
+
+        # Update tvg_id from the new stream
+        if stream.tvg_id and stream.tvg_id != channel.tvg_id:
+            channel.tvg_id = stream.tvg_id
+            update_fields.append("tvg_id")
+
+            # Try to find matching EPG data
+            epg = EPGData.objects.filter(tvg_id=stream.tvg_id).first()
+            if epg and channel.epg_data_id != epg.id:
+                channel.epg_data = epg
+                update_fields.append("epg_data")
+
+        if update_fields:
+            channel.save(update_fields=update_fields)
+            logger.info(
+                f"Auto-updated channel {channel.id} ({channel.name}) "
+                f"EPG from new primary stream {stream_id}: "
+                f"tvg_id={stream.tvg_id}, epg_data_id={channel.epg_data_id}"
+            )
 
     def validate_channel_number(self, value):
         """Ensure channel_number is properly processed as a float"""
