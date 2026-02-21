@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-02-21
+
 ### Fixed
 
 - Backend: Channel EPG data (`tvg_id` and `epg_data`) now auto-updates when the primary stream is changed or remapped to a different source.
