@@ -1569,6 +1569,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         channel_ids = request.data.get('channel_ids', [])
         channel_group_id = request.data.get('channel_group', None)
         profile_id = request.data.get('profile_id', None)
+        remap = request.data.get('remap', False)
 
         # If a group is specified, resolve to channel IDs
         if channel_group_id and not channel_ids:
@@ -1588,15 +1589,18 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 .values_list('id', flat=True)
             )
 
+        remap_label = " (remap mode: clearing existing matches first)" if remap else ""
+
         if channel_ids:
             # Process only selected channels
             from .tasks import match_selected_channels_epg
-            match_selected_channels_epg.delay(channel_ids)
-            message = f"EPG matching task initiated for {len(channel_ids)} selected channel(s)."
+            match_selected_channels_epg.delay(channel_ids, remap=remap)
+            message = f"EPG matching task initiated for {len(channel_ids)} selected channel(s).{remap_label}"
         else:
-            # Process all channels without EPG (original behavior)
-            match_epg_channels.delay()
-            message = "EPG matching task initiated for all channels without EPG."
+            # Process all channels (or only unmatched if remap=False)
+            match_epg_channels.delay(remap=remap)
+            scope = "all channels" if remap else "all channels without EPG"
+            message = f"EPG matching task initiated for {scope}.{remap_label}"
 
         return Response(
             {"message": message}, status=status.HTTP_202_ACCEPTED

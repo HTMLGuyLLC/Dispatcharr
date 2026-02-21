@@ -541,13 +541,15 @@ def match_channels_to_epg(channels_data, epg_data, region_code=None, use_ml=True
     }
 
 @shared_task
-def match_epg_channels():
+def match_epg_channels(remap=False):
     """
     Uses integrated EPG matching instead of external script.
     Provides the same functionality with better performance and maintainability.
+
+    If remap=True, clears existing EPG assignments and re-matches ALL channels.
     """
     try:
-        logger.info("Starting integrated EPG matching...")
+        logger.info(f"Starting integrated EPG matching (remap={remap})...")
 
         # Get region preference
         try:
@@ -556,12 +558,18 @@ def match_epg_channels():
         except CoreSettings.DoesNotExist:
             region_code = None
 
-        # Get channels that don't have EPG data assigned
-        channels_without_epg = Channel.objects.filter(epg_data__isnull=True)
-        logger.info(f"Found {channels_without_epg.count()} channels without EPG data")
+        if remap:
+            # Clear all existing EPG assignments and process all channels
+            cleared = Channel.objects.filter(epg_data__isnull=False).update(epg_data=None)
+            logger.info(f"Remap mode: cleared EPG data from {cleared} channels")
+            channels_to_match = Channel.objects.all()
+        else:
+            # Only process channels without EPG (original behavior)
+            channels_to_match = Channel.objects.filter(epg_data__isnull=True)
+        logger.info(f"Found {channels_to_match.count()} channels to match")
 
         channels_data = []
-        for channel in channels_without_epg:
+        for channel in channels_to_match:
             normalized_tvg_id = channel.tvg_id.strip().lower() if channel.tvg_id else ""
             normalized_gracenote_id = channel.tvc_guide_stationid.strip().lower() if channel.tvc_guide_stationid else ""
             channels_data.append({
@@ -668,13 +676,15 @@ def match_epg_channels():
 
 
 @shared_task
-def match_selected_channels_epg(channel_ids):
+def match_selected_channels_epg(channel_ids, remap=False):
     """
     Match EPG data for only the specified selected channels.
     Uses the same integrated EPG matching logic but processes only selected channels.
+
+    If remap=True, clears existing EPG assignments for those channels and re-matches.
     """
     try:
-        logger.info(f"Starting integrated EPG matching for {len(channel_ids)} selected channels...")
+        logger.info(f"Starting integrated EPG matching for {len(channel_ids)} selected channels (remap={remap})...")
 
         # Get region preference
         try:
@@ -683,12 +693,21 @@ def match_selected_channels_epg(channel_ids):
         except CoreSettings.DoesNotExist:
             region_code = None
 
-        # Get only the specified channels that don't have EPG data assigned
-        channels_without_epg = Channel.objects.filter(
-            id__in=channel_ids,
-            epg_data__isnull=True
-        )
-        logger.info(f"Found {channels_without_epg.count()} selected channels without EPG data")
+        if remap:
+            # Clear existing EPG assignments for selected channels
+            cleared = Channel.objects.filter(
+                id__in=channel_ids,
+                epg_data__isnull=False
+            ).update(epg_data=None)
+            logger.info(f"Remap mode: cleared EPG data from {cleared} selected channels")
+            channels_without_epg = Channel.objects.filter(id__in=channel_ids)
+        else:
+            # Only process channels without EPG (original behavior)
+            channels_without_epg = Channel.objects.filter(
+                id__in=channel_ids,
+                epg_data__isnull=True
+            )
+        logger.info(f"Found {channels_without_epg.count()} selected channels to match")
 
         if not channels_without_epg.exists():
             logger.info("No selected channels need EPG matching.")

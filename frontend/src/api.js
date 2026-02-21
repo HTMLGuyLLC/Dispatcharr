@@ -2172,6 +2172,9 @@ export default class API {
       if (options.profileId) {
         requestBody.profile_id = options.profileId;
       }
+      if (options.remap) {
+        requestBody.remap = true;
+      }
 
       const response = await request(
         `${host}/api/channels/channels/match-epg/`,

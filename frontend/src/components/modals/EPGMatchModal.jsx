@@ -8,6 +8,7 @@ import {
   Button,
   Loader,
   Radio,
+  Checkbox,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import useSettingsStore from '../../store/settings';
@@ -43,6 +44,7 @@ const EPGMatchModal = ({ opened, onClose, onSuccess, selectedChannelIds = [], ch
 
   const [loading, setLoading] = useState(false);
   const [settingsMode, setSettingsMode] = useState('default');
+  const [remap, setRemap] = useState(false);
 
   // Compute form values directly from settings - memoized for performance
   const storedValues = useMemo(
@@ -62,6 +64,7 @@ const EPGMatchModal = ({ opened, onClose, onSuccess, selectedChannelIds = [], ch
     if (opened && !prevOpened.current) {
       setFormValues(storedValues);
       setSettingsMode(storedValues.epg_match_mode);
+      setRemap(false);
     }
     prevOpened.current = opened;
   }, [opened, storedValues]);
@@ -84,6 +87,7 @@ const EPGMatchModal = ({ opened, onClose, onSuccess, selectedChannelIds = [], ch
       const options = {};
       if (channelGroup) options.channelGroup = channelGroup;
       if (profileId) options.profileId = profileId;
+      if (remap) options.remap = true;
 
       console.log('[EPGMatch] Starting EPG match with:', {
         selectedChannelIds,
@@ -152,6 +156,13 @@ const EPGMatchModal = ({ opened, onClose, onSuccess, selectedChannelIds = [], ch
         <Text size="sm" c="dimmed">
           Match channels to EPG data for {scopeText}.
         </Text>
+
+        <Checkbox
+          label="Remap existing matches"
+          description="Clear all existing EPG assignments and re-match from scratch. Leave unchecked to only match channels without EPG data."
+          checked={remap}
+          onChange={(event) => setRemap(event.currentTarget.checked)}
+        />
 
         <Radio.Group
           value={settingsMode}
