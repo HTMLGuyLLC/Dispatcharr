@@ -12,7 +12,7 @@ def bump_version(version_type='patch'):
     content = version_file.read_text()
 
     # Extract version
-    version_match = re.search(r"__version__ = '(\d+)\.(\d+)\.(\d+)'", content)
+    version_match = re.search(r'__version__ = ["\'](\d+)\.(\d+)\.(\d+)["\']', content)
     if not version_match:
         print("Could not find version number in version.py")
         return
@@ -34,15 +34,15 @@ def bump_version(version_type='patch'):
 
     # Update version in file
     new_content = re.sub(
-        r"__version__ = '\d+\.\d+\.\d+'",
-        f"__version__ = '{new_version}'",
+        r'__version__ = ["\']\d+\.\d+\.\d+["\']',
+        f'__version__ = "{new_version}"',
         content
     )
 
     # Reset build number
     new_content = re.sub(
-        r"__build__ = '\d+'",
-        "__build__ = '0'",
+        r'__build__ = ["\']\d+["\']',
+        '__build__ = "0"',
         new_content
     )
 
