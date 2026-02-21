@@ -201,7 +201,7 @@ const StreamGroup = React.memo(({ groupName, streams, defaultOpen = false, onDel
     const dragData = useMemo(() => ({
         type: 'stream-group',
         groupName,
-        streamIds: streams.map(s => s.id),
+        streamIds: (streams || []).map(s => s.id),
     }), [groupName, streams]);
 
     const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
@@ -325,7 +325,7 @@ const StreamLibraryPanel = ({ selectedGroup }) => {
     });
 
     useEffect(() => {
-        if (playlists.length === 0) {
+        if (!playlists || playlists.length === 0) {
             fetchPlaylists();
         }
         if (Object.keys(channelGroups).length === 0) {
@@ -714,7 +714,7 @@ const StreamLibraryPanel = ({ selectedGroup }) => {
                     />
                     <Select
                         placeholder="All Sources"
-                        data={playlists.map(p => ({ value: String(p.id), label: p.name || `Source ${p.id}` }))}
+                        data={(playlists || []).map(p => ({ value: String(p.id), label: p.name || `Source ${p.id}` }))}
                         value={selectedSource}
                         onChange={(val) => {
                             setSelectedSource(val);

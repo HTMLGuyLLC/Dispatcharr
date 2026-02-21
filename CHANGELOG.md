@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.2.0] - 2026-02-20
+
+### Added
+- Backend: Added channel `stream_source` filtering.
+- Added `/ids` endpoint and a `remap` action to `ChannelViewSet` to swap streams by `tvg_id`.
+- Added `clear_vod_for_account` and `clear_vod_for_category` Celery tasks.
+
+### Changed
+- Wired VOD enable/disable flows in `M3UAccountViewSet`, including an explicit `clear-vod` action and category disable cleanup.
+- Refined output endpoints to only return channels with active or custom streams.
+- Updated profile creation to ignore inactive M3U accounts when creating from sources.
+
 ## [0.1.1] - 2026-02-15
 
 ### Fixed

@@ -42,7 +42,8 @@ const usePlaylistsStore = create((set) => ({
   fetchPlaylists: async () => {
     set({ isLoading: true, error: null });
     try {
-      const playlists = await api.getPlaylists();
+      const response = await api.getPlaylists();
+      const playlists = Array.isArray(response) ? response : [];
       set({
         playlists: playlists,
         isLoading: false,

@@ -1011,7 +1011,7 @@ const GroupChannelsPanel = ({ selectedGroup: selectedGroupProp, onRefreshRef, on
     const playlists = usePlaylistsStore((s) => s.playlists);
     const sourceOptions = useMemo(() => [
         { value: 'all', label: 'All Sources' },
-        ...playlists.map(p => ({ value: `m3u-${p.id}`, label: p.name }))
+        ...(playlists || []).map(p => ({ value: `m3u-${p.id}`, label: p.name }))
     ], [playlists]);
 
     // Channel mutation state
