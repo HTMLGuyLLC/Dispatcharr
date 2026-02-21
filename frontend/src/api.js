@@ -191,7 +191,8 @@ export default class API {
       const response = await request(
         `${host}/api/channels/channels/ids/?${params.toString()}`
       );
-      return response.ids || [];
+      // Backend returns a plain array of IDs, not {ids: [...]}
+      return Array.isArray(response) ? response : (response.ids || []);
     } catch (e) {
       errorNotification('Failed to retrieve channel IDs', e);
       return [];

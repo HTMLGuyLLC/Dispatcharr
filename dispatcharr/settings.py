@@ -71,16 +71,23 @@ DATABASE_CONN_MAX_AGE = (
 # Disable atomic requests for performance-sensitive views
 ATOMIC_REQUESTS = False
 
-# Cache settings - add caching for EPG operations
+# Cache settings - use Redis for shared caching across all workers
+# (uwsgi, celery, daphne all share the same cache entries)
+# Build auth string from component vars already available at this point
+_cache_redis_auth = ""
+if REDIS_PASSWORD:
+    _enc_pw = quote_plus(REDIS_PASSWORD)
+    if REDIS_USER:
+        _cache_redis_auth = f"{quote_plus(REDIS_USER)}:{_enc_pw}@"
+    else:
+        _cache_redis_auth = f":{_enc_pw}@"
+
 CACHES = {
     "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "dispatcharr-epg-cache",
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": f"redis://{_cache_redis_auth}{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}",
         "TIMEOUT": 3600,  # 1 hour cache timeout
-        "OPTIONS": {
-            "MAX_ENTRIES": 10000,
-            "CULL_FREQUENCY": 3,  # Purge 1/3 of entries when max is reached
-        },
+        "KEY_PREFIX": "dispatcharr",
     }
 }
 

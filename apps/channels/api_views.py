@@ -946,11 +946,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         context["include_streams"] = include_streams
         return context
 
-    @action(detail=False, methods=["get"], url_path="ids")
-    def get_ids(self, request):
-        """Return a flat list of channel IDs matching the current filters, ignoring pagination."""
-        queryset = self.filter_queryset(self.get_queryset())
-        return Response({"ids": list(queryset.values_list('id', flat=True))})
+
 
     @action(detail=False, methods=["patch"], url_path="edit/bulk")
     def edit_bulk(self, request):

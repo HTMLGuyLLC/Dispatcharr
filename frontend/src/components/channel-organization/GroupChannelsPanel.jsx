@@ -1110,10 +1110,13 @@ const GroupChannelsPanel = ({ selectedGroup: selectedGroupProp, onRefreshRef, on
             } else if (visibilityFilter === 'hidden') {
                 params.set('is_hidden', 'true');
             }
+            if (m3uSourceFilter && m3uSourceFilter !== 'all') {
+                params.set('stream_source', m3uSourceFilter);
+            }
             const allIds = await API.queryChannelIds(params);
             setSelectedIds(new Set(allIds));
         }
-    }, [selectedGroup, selectedProfileId, debouncedSearch, sourceFilter, epgFilter, visibilityFilter, selectedIds.size, totalChannels]);
+    }, [selectedGroup, selectedProfileId, debouncedSearch, sourceFilter, epgFilter, visibilityFilter, m3uSourceFilter, selectedIds.size, totalChannels]);
 
     const handleBulkDelete = async () => {
         if (selectedIds.size === 0) return;

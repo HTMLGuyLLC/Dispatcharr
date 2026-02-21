@@ -42,15 +42,15 @@ const RemapChannelsModal = ({ opened, onClose, scope, onSuccess }) => {
                     API.getXtreamAccounts(),
                 ]);
 
-                const items = [];
+                const m3uItems = [];
+                const xtreamItems = [];
 
                 // Add M3U accounts
                 if (Array.isArray(playlists)) {
                     for (const p of playlists) {
-                        items.push({
+                        m3uItems.push({
                             value: `m3u:${p.id}`,
                             label: p.name,
-                            group: 'M3U Accounts',
                         });
                     }
                 }
@@ -60,14 +60,17 @@ const RemapChannelsModal = ({ opened, onClose, scope, onSuccess }) => {
                     ? xtreamAccounts
                     : xtreamAccounts?.results || [];
                 for (const x of xtreamList) {
-                    items.push({
+                    xtreamItems.push({
                         value: `xtream:${x.id}`,
                         label: x.name,
-                        group: 'Xtream Accounts',
                     });
                 }
 
-                setSources(items);
+                const newSources = [];
+                if (m3uItems.length > 0) newSources.push({ group: 'M3U Accounts', items: m3uItems });
+                if (xtreamItems.length > 0) newSources.push({ group: 'Xtream Accounts', items: xtreamItems });
+
+                setSources(newSources);
             } catch (err) {
                 console.error('Failed to load sources:', err);
             } finally {

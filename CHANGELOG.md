@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.4.0] - 2026-02-20
+
+### Added
+- Frontend: Added `stream_source` filtering support to `GroupChannelsPanel`.
+
+### Changed
+- Backend: Migrated internal cache from `LocMemCache` to `RedisCache` for shared availability across uwsgi, celery, and daphne. 
+- Backend: Optimized stream querying in `generate_m3u` and `generate_epg` by using `Prefetch` to eliminate N+1 queries.
+- Frontend: Improved dropdown source UI grouping in `RemapChannelsModal` to properly categorize and display M3U and Xtream sources.
+- Frontend: Improved robustness of `get_ids` API method to handle raw array responses gracefully.
+
 ## [0.3.0] - 2026-02-20
 
 ### Added

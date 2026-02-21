@@ -1,0 +1,220 @@
+diff --git a/apps/channels/api_views.py b/apps/channels/api_views.py
+index 01bc71ea..f695d042 100644
+--- a/apps/channels/api_views.py
++++ b/apps/channels/api_views.py
+@@ -946,11 +946,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
+         context["include_streams"] = include_streams
+         return context
+ 
+-    @action(detail=False, methods=["get"], url_path="ids")
+-    def get_ids(self, request):
+-        """Return a flat list of channel IDs matching the current filters, ignoring pagination."""
+-        queryset = self.filter_queryset(self.get_queryset())
+-        return Response({"ids": list(queryset.values_list('id', flat=True))})
++
+ 
+     @action(detail=False, methods=["patch"], url_path="edit/bulk")
+     def edit_bulk(self, request):
+diff --git a/apps/output/views.py b/apps/output/views.py
+index a76c1d74..83247c44 100644
+--- a/apps/output/views.py
++++ b/apps/output/views.py
+@@ -2,8 +2,8 @@ import ipaddress
+ from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidden, StreamingHttpResponse
+ from rest_framework.response import Response
+ from django.urls import reverse
+-from apps.channels.models import Channel, ChannelProfile, ChannelGroup, ProfileGroup
+-from django.db.models import Q
++from apps.channels.models import Channel, ChannelProfile, ChannelGroup, ProfileGroup, Stream
++from django.db.models import Q, Prefetch
+ from django.views.decorators.csrf import csrf_exempt
+ from django.views.decorators.http import require_http_methods
+ from apps.epg.models import ProgramData
+@@ -211,6 +211,11 @@ def _get_channels_sorted_by_groups(base_filters, profile=None, merge_all_profile
+                     Channel.objects.filter(**group_filters)
+                     .filter(active_source_q)
+                     .select_related('channel_group', 'logo')
++                    .prefetch_related(Prefetch(
++                        'streams',
++                        queryset=Stream.objects.order_by('channelstream__order'),
++                        to_attr='prefetched_streams',
++                    ))
+                     .distinct()
+                     .order_by(*ordering)
+                 )
+@@ -222,6 +227,11 @@ def _get_channels_sorted_by_groups(base_filters, profile=None, merge_all_profile
+                 Channel.objects.filter(**group_filters)
+                 .filter(active_source_q)
+                 .select_related('channel_group', 'logo')
++                .prefetch_related(Prefetch(
++                    'streams',
++                    queryset=Stream.objects.order_by('channelstream__order'),
++                    to_attr='prefetched_streams',
++                ))
+                 .distinct()
+                 .order_by(*ordering)
+             )
+@@ -235,6 +245,11 @@ def _get_channels_sorted_by_groups(base_filters, profile=None, merge_all_profile
+             Channel.objects.filter(**no_group_filters)
+             .filter(active_source_q)
+             .select_related('channel_group', 'logo')
++            .prefetch_related(Prefetch(
++                'streams',
++                queryset=Stream.objects.order_by('channelstream__order'),
++                to_attr='prefetched_streams',
++            ))
+             .distinct()
+             .order_by('channel_number')
+         )
+@@ -463,8 +478,9 @@ def generate_m3u(request, profile_name=None, user=None):
+ 
+         # Determine the stream URL based on the direct parameter
+         if use_direct_urls:
+-            # Try to get the first stream's direct URL
+-            first_stream = channel.streams.order_by('channelstream__order').first()
++            # Use prefetched streams to avoid N+1 queries
++            prefetched = getattr(channel, 'prefetched_streams', None)
++            first_stream = prefetched[0] if prefetched else None
+             if first_stream and first_stream.url:
+                 # Use the direct stream URL
+                 stream_url = first_stream.url
+@@ -1632,10 +1648,10 @@ def generate_epg(request, profile_name=None, user=None):
+ 
+                         if name_source == 'stream':
+                             stream_index = custom_props.get('stream_index', 1) - 1
+-                            channel_streams = channel.streams.all().order_by('channelstream__order')
++                            channel_streams = getattr(channel, 'prefetched_streams', None) or list(channel.streams.all().order_by('channelstream__order'))
+ 
+-                            if channel_streams.exists() and 0 <= stream_index < channel_streams.count():
+-                                stream = list(channel_streams)[stream_index]
++                            if channel_streams and 0 <= stream_index < len(channel_streams):
++                                stream = channel_streams[stream_index]
+                                 pattern_match_name = stream.name
+ 
+                         # Try to extract groups from the channel/stream name and build the logo URL
+@@ -1735,10 +1751,10 @@ def generate_epg(request, profile_name=None, user=None):
+ 
+                     if name_source == 'stream':
+                         stream_index = custom_props.get('stream_index', 1) - 1
+-                        channel_streams = channel.streams.all().order_by('channelstream__order')
++                        channel_streams = getattr(channel, 'prefetched_streams', None) or list(channel.streams.all().order_by('channelstream__order'))
+ 
+-                        if channel_streams.exists() and 0 <= stream_index < channel_streams.count():
+-                            stream = list(channel_streams)[stream_index]
++                        if channel_streams and 0 <= stream_index < len(channel_streams):
++                            stream = channel_streams[stream_index]
+                             pattern_match_name = stream.name
+                             logger.debug(f"Using stream name for parsing: {pattern_match_name} (stream index: {stream_index})")
+                         else:
+diff --git a/dispatcharr/settings.py b/dispatcharr/settings.py
+index 6a6541a1..f7cd2045 100644
+--- a/dispatcharr/settings.py
++++ b/dispatcharr/settings.py
+@@ -71,16 +71,23 @@ DATABASE_CONN_MAX_AGE = (
+ # Disable atomic requests for performance-sensitive views
+ ATOMIC_REQUESTS = False
+ 
+-# Cache settings - add caching for EPG operations
++# Cache settings - use Redis for shared caching across all workers
++# (uwsgi, celery, daphne all share the same cache entries)
++# Build auth string from component vars already available at this point
++_cache_redis_auth = ""
++if REDIS_PASSWORD:
++    _enc_pw = quote_plus(REDIS_PASSWORD)
++    if REDIS_USER:
++        _cache_redis_auth = f"{quote_plus(REDIS_USER)}:{_enc_pw}@"
++    else:
++        _cache_redis_auth = f":{_enc_pw}@"
++
+ CACHES = {
+     "default": {
+-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+-        "LOCATION": "dispatcharr-epg-cache",
++        "BACKEND": "django.core.cache.backends.redis.RedisCache",
++        "LOCATION": f"redis://{_cache_redis_auth}{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}",
+         "TIMEOUT": 3600,  # 1 hour cache timeout
+-        "OPTIONS": {
+-            "MAX_ENTRIES": 10000,
+-            "CULL_FREQUENCY": 3,  # Purge 1/3 of entries when max is reached
+-        },
++        "KEY_PREFIX": "dispatcharr",
+     }
+ }
+ 
+diff --git a/frontend/src/api.js b/frontend/src/api.js
+index f378851b..68351aef 100644
+--- a/frontend/src/api.js
++++ b/frontend/src/api.js
+@@ -191,7 +191,8 @@ export default class API {
+       const response = await request(
+         `${host}/api/channels/channels/ids/?${params.toString()}`
+       );
+-      return response.ids || [];
++      // Backend returns a plain array of IDs, not {ids: [...]}
++      return Array.isArray(response) ? response : (response.ids || []);
+     } catch (e) {
+       errorNotification('Failed to retrieve channel IDs', e);
+       return [];
+diff --git a/frontend/src/components/channel-organization/GroupChannelsPanel.jsx b/frontend/src/components/channel-organization/GroupChannelsPanel.jsx
+index 642e5655..23a318b1 100644
+--- a/frontend/src/components/channel-organization/GroupChannelsPanel.jsx
++++ b/frontend/src/components/channel-organization/GroupChannelsPanel.jsx
+@@ -1110,10 +1110,13 @@ const GroupChannelsPanel = ({ selectedGroup: selectedGroupProp, onRefreshRef, on
+             } else if (visibilityFilter === 'hidden') {
+                 params.set('is_hidden', 'true');
+             }
++            if (m3uSourceFilter && m3uSourceFilter !== 'all') {
++                params.set('stream_source', m3uSourceFilter);
++            }
+             const allIds = await API.queryChannelIds(params);
+             setSelectedIds(new Set(allIds));
+         }
+-    }, [selectedGroup, selectedProfileId, debouncedSearch, sourceFilter, epgFilter, visibilityFilter, selectedIds.size, totalChannels]);
++    }, [selectedGroup, selectedProfileId, debouncedSearch, sourceFilter, epgFilter, visibilityFilter, m3uSourceFilter, selectedIds.size, totalChannels]);
+ 
+     const handleBulkDelete = async () => {
+         if (selectedIds.size === 0) return;
+diff --git a/frontend/src/components/modals/RemapChannelsModal.jsx b/frontend/src/components/modals/RemapChannelsModal.jsx
+index 1a91a4c1..144ebcda 100644
+--- a/frontend/src/components/modals/RemapChannelsModal.jsx
++++ b/frontend/src/components/modals/RemapChannelsModal.jsx
+@@ -42,15 +42,15 @@ const RemapChannelsModal = ({ opened, onClose, scope, onSuccess }) => {
+                     API.getXtreamAccounts(),
+                 ]);
+ 
+-                const items = [];
++                const m3uItems = [];
++                const xtreamItems = [];
+ 
+                 // Add M3U accounts
+                 if (Array.isArray(playlists)) {
+                     for (const p of playlists) {
+-                        items.push({
++                        m3uItems.push({
+                             value: `m3u:${p.id}`,
+                             label: p.name,
+-                            group: 'M3U Accounts',
+                         });
+                     }
+                 }
+@@ -60,14 +60,17 @@ const RemapChannelsModal = ({ opened, onClose, scope, onSuccess }) => {
+                     ? xtreamAccounts
+                     : xtreamAccounts?.results || [];
+                 for (const x of xtreamList) {
+-                    items.push({
++                    xtreamItems.push({
+                         value: `xtream:${x.id}`,
+                         label: x.name,
+-                        group: 'Xtream Accounts',
+                     });
+                 }
+ 
+-                setSources(items);
++                const newSources = [];
++                if (m3uItems.length > 0) newSources.push({ group: 'M3U Accounts', items: m3uItems });
++                if (xtreamItems.length > 0) newSources.push({ group: 'Xtream Accounts', items: xtreamItems });
++
++                setSources(newSources);
+             } catch (err) {
+                 console.error('Failed to load sources:', err);
+             } finally {

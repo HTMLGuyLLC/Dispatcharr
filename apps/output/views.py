@@ -2,8 +2,8 @@ import ipaddress
 from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidden, StreamingHttpResponse
 from rest_framework.response import Response
 from django.urls import reverse
-from apps.channels.models import Channel, ChannelProfile, ChannelGroup, ProfileGroup
-from django.db.models import Q
+from apps.channels.models import Channel, ChannelProfile, ChannelGroup, ProfileGroup, Stream
+from django.db.models import Q, Prefetch
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from apps.epg.models import ProgramData
@@ -211,6 +211,11 @@ def _get_channels_sorted_by_groups(base_filters, profile=None, merge_all_profile
                     Channel.objects.filter(**group_filters)
                     .filter(active_source_q)
                     .select_related('channel_group', 'logo')
+                    .prefetch_related(Prefetch(
+                        'streams',
+                        queryset=Stream.objects.order_by('channelstream__order'),
+                        to_attr='prefetched_streams',
+                    ))
                     .distinct()
                     .order_by(*ordering)
                 )
@@ -222,6 +227,11 @@ def _get_channels_sorted_by_groups(base_filters, profile=None, merge_all_profile
                 Channel.objects.filter(**group_filters)
                 .filter(active_source_q)
                 .select_related('channel_group', 'logo')
+                .prefetch_related(Prefetch(
+                    'streams',
+                    queryset=Stream.objects.order_by('channelstream__order'),
+                    to_attr='prefetched_streams',
+                ))
                 .distinct()
                 .order_by(*ordering)
             )
@@ -235,6 +245,11 @@ def _get_channels_sorted_by_groups(base_filters, profile=None, merge_all_profile
             Channel.objects.filter(**no_group_filters)
             .filter(active_source_q)
             .select_related('channel_group', 'logo')
+            .prefetch_related(Prefetch(
+                'streams',
+                queryset=Stream.objects.order_by('channelstream__order'),
+                to_attr='prefetched_streams',
+            ))
             .distinct()
             .order_by('channel_number')
         )
@@ -463,8 +478,9 @@ def generate_m3u(request, profile_name=None, user=None):
 
         # Determine the stream URL based on the direct parameter
         if use_direct_urls:
-            # Try to get the first stream's direct URL
-            first_stream = channel.streams.order_by('channelstream__order').first()
+            # Use prefetched streams to avoid N+1 queries
+            prefetched = getattr(channel, 'prefetched_streams', None)
+            first_stream = prefetched[0] if prefetched else None
             if first_stream and first_stream.url:
                 # Use the direct stream URL
                 stream_url = first_stream.url
@@ -1632,10 +1648,10 @@ def generate_epg(request, profile_name=None, user=None):
 
                         if name_source == 'stream':
                             stream_index = custom_props.get('stream_index', 1) - 1
-                            channel_streams = channel.streams.all().order_by('channelstream__order')
+                            channel_streams = getattr(channel, 'prefetched_streams', None) or list(channel.streams.all().order_by('channelstream__order'))
 
-                            if channel_streams.exists() and 0 <= stream_index < channel_streams.count():
-                                stream = list(channel_streams)[stream_index]
+                            if channel_streams and 0 <= stream_index < len(channel_streams):
+                                stream = channel_streams[stream_index]
                                 pattern_match_name = stream.name
 
                         # Try to extract groups from the channel/stream name and build the logo URL
@@ -1735,10 +1751,10 @@ def generate_epg(request, profile_name=None, user=None):
 
                     if name_source == 'stream':
                         stream_index = custom_props.get('stream_index', 1) - 1
-                        channel_streams = channel.streams.all().order_by('channelstream__order')
+                        channel_streams = getattr(channel, 'prefetched_streams', None) or list(channel.streams.all().order_by('channelstream__order'))
 
-                        if channel_streams.exists() and 0 <= stream_index < channel_streams.count():
-                            stream = list(channel_streams)[stream_index]
+                        if channel_streams and 0 <= stream_index < len(channel_streams):
+                            stream = channel_streams[stream_index]
                             pattern_match_name = stream.name
                             logger.debug(f"Using stream name for parsing: {pattern_match_name} (stream index: {stream_index})")
                         else:
