@@ -1996,6 +1996,16 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        def _normalize_stream_name(name):
+            """Normalize a stream name for comparison: strip pipes, collapse whitespace, lowercase."""
+            if not name:
+                return ""
+            import re as _re
+            # Replace pipe characters with spaces, collapse whitespace, strip, lowercase
+            norm = name.replace("|", " ")
+            norm = _re.sub(r"\s+", " ", norm).strip().lower()
+            return norm
+
         # Pre-build lookups for destination streams
         # Primary: tvg_id -> list of dest streams
         # Secondary: normalized name -> list of dest streams (for fallback matching)
@@ -2009,7 +2019,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
             if s.tvg_id:
                 dest_by_tvg_id.setdefault(s.tvg_id, []).append(s)
             if s.name:
-                dest_by_name.setdefault(s.name.strip().lower(), []).append(s)
+                norm_name = _normalize_stream_name(s.name)
+                if norm_name:
+                    dest_by_name.setdefault(norm_name, []).append(s)
 
         remapped_count = 0
         errors = []
@@ -2027,7 +2039,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
             for cs in cs_entries:
                 source_stream = cs.stream
                 tvg_id = source_stream.tvg_id
-                source_name = source_stream.name.strip().lower() if source_stream.name else ""
+                source_name = _normalize_stream_name(source_stream.name)
 
                 # Try tvg_id match first
                 candidates = dest_by_tvg_id.get(tvg_id, []) if tvg_id else []
