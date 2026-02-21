@@ -1997,12 +1997,15 @@ class ChannelViewSet(viewsets.ModelViewSet):
             )
 
         def _normalize_stream_name(name):
-            """Normalize a stream name for comparison: strip all punctuation/separators, collapse whitespace, lowercase."""
+            """Normalize a stream name for comparison: strip all punctuation/separators,
+            remove '24/7' (common in channel names), collapse whitespace, lowercase."""
             if not name:
                 return ""
             import re as _re
+            # Remove 24/7 before stripping punctuation (so the / doesn't leave artifacts)
+            norm = _re.sub(r'24\s*/\s*7', ' ', name)
             # Remove all non-alphanumeric characters (|, :, -, etc.), collapse whitespace, lowercase
-            norm = _re.sub(r"[^a-zA-Z0-9\s]", " ", name)
+            norm = _re.sub(r"[^a-zA-Z0-9\s]", " ", norm)
             norm = _re.sub(r"\s+", " ", norm).strip().lower()
             return norm
 
@@ -2021,6 +2024,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
         #   This handles both exact matches and provider-appended instance numbers
         #   e.g. TheWeatherChannel.us and TheWeatherChannel.us1 both key as TheWeatherChannel.us
         # Secondary: normalized name -> list of dest streams (for fallback matching)
+        #   Names are normalized: punctuation stripped, 24/7 removed, lowercased
         all_dest_streams = Stream.objects.filter(
             **dest_stream_filter
         ).only("id", "tvg_id", "channel_group_id", "name")
@@ -2074,33 +2078,64 @@ class ChannelViewSet(viewsets.ModelViewSet):
                     })
                     continue
 
-                # Prefer a candidate in the same channel group, otherwise take the first
-                dest_stream = None
-                for c in candidates:
-                    if c.channel_group_id == cs.channel.channel_group_id:
-                        dest_stream = c
-                        break
-                if not dest_stream:
-                    dest_stream = candidates[0]
+                if matched_by == "tvg_id":
+                    # tvg_id match: pick the best single candidate (prefer same group)
+                    dest_stream = None
+                    for c in candidates:
+                        if c.channel_group_id == cs.channel.channel_group_id:
+                            dest_stream = c
+                            break
+                    if not dest_stream:
+                        dest_stream = candidates[0]
 
-                # Check if already using this dest stream (skip if same)
-                if cs.stream_id == dest_stream.id:
-                    continue
+                    # Check if already using this dest stream (skip if same)
+                    if cs.stream_id == dest_stream.id:
+                        continue
 
-                # Check if a ChannelStream already exists for this channel+dest_stream
-                existing = ChannelStream.objects.filter(
-                    channel=cs.channel, stream=dest_stream
-                ).exists()
+                    # Check if a ChannelStream already exists for this channel+dest_stream
+                    existing = ChannelStream.objects.filter(
+                        channel=cs.channel, stream=dest_stream
+                    ).exists()
 
-                if existing:
-                    # Just remove the old source entry
-                    cs.delete()
+                    if existing:
+                        # Just remove the old source entry
+                        cs.delete()
+                    else:
+                        # Swap: update the stream reference in-place to preserve order
+                        cs.stream = dest_stream
+                        cs.save(update_fields=["stream_id"])
+
+                    remapped_count += 1
                 else:
-                    # Swap: update the stream reference in-place to preserve order
-                    cs.stream = dest_stream
-                    cs.save(update_fields=["stream_id"])
+                    # Name match: add ALL matching destination streams to the channel
+                    # since name matches may yield multiple valid streams (e.g. HD/SD, 24/7 variants)
+                    first = True
+                    for dest_stream in candidates:
+                        # Skip if this dest stream is already on the channel
+                        if ChannelStream.objects.filter(
+                            channel=cs.channel, stream=dest_stream
+                        ).exists():
+                            continue
 
-                remapped_count += 1
+                        if first:
+                            # Swap the existing ChannelStream entry in-place to preserve order
+                            if cs.stream_id != dest_stream.id:
+                                cs.stream = dest_stream
+                                cs.save(update_fields=["stream_id"])
+                            first = False
+                        else:
+                            # Add additional streams after the swapped one
+                            ChannelStream.objects.create(
+                                channel=cs.channel,
+                                stream=dest_stream,
+                                order=cs.order + 1 if hasattr(cs, 'order') else 0,
+                            )
+
+                    if first:
+                        # All candidates were already on the channel, delete the old source entry
+                        cs.delete()
+
+                    remapped_count += 1
 
         return Response({
             "success": True,
