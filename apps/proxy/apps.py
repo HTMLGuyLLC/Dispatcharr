@@ -9,9 +9,7 @@ class ProxyConfig(AppConfig):
     def ready(self):
         """Initialize proxy servers when Django starts"""
         if 'manage.py' not in sys.argv:
-            from .hls_proxy.server import ProxyServer as HLSProxyServer
             from .ts_proxy.server import ProxyServer as TSProxyServer
 
-            # Initialize proxy servers
-            self.hls_proxy = HLSProxyServer()
+            # Initialize TS proxy server
             self.ts_proxy = TSProxyServer()
