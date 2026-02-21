@@ -36,8 +36,8 @@ const CreateProfileModal = ({ opened, onClose }) => {
         }
     }, [opened]);
 
-    // Prepare M3U source options for multiselect
-    const sourceOptions = playlists.map((playlist) => ({
+    // Prepare M3U source options for multiselect (only active sources)
+    const sourceOptions = playlists.filter((playlist) => playlist.is_active !== false).map((playlist) => ({
         value: `${playlist.id}`,
         label: playlist.name,
         // Show how many groups this source has

@@ -1,5 +1,6 @@
 import API from '../../api.js';
 import useChannelsStore from '../../store/channels.jsx';
+import logo from '../../images/logo.png';
 
 export const removeRecording = (id) => {
   // Optimistically remove immediately from UI
@@ -22,7 +23,7 @@ export const removeRecording = (id) => {
 export const getPosterUrl = (posterLogoId, customProperties, posterUrl) => {
   let purl = posterLogoId
     ? `/api/channels/logos/${posterLogoId}/cache/`
-    : customProperties?.poster_url || posterUrl || '/logo.png';
+    : customProperties?.poster_url || posterUrl || logo;
   if (
     typeof import.meta !== 'undefined' &&
     import.meta.env &&

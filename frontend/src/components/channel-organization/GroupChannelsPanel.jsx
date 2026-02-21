@@ -12,6 +12,7 @@ import {
     Table,
     ActionIcon,
     Select,
+    NativeSelect,
     Menu,
     Badge,
     Tooltip,
@@ -57,6 +58,7 @@ import {
     IconPhoto,
 } from '@tabler/icons-react';
 import useChannelsStore from '../../store/channels';
+import usePlaylistsStore from '../../store/playlists';
 import InlineAddPopover from './InlineAddPopover';
 import useVideoStore from '../../store/useVideoStore';
 import useSettingsStore from '../../store/settings';
@@ -921,14 +923,21 @@ const GroupChannelsPanel = ({ selectedGroup: selectedGroupProp, onRefreshRef, on
     const [loading, setLoading] = useState(false);
     const [page, setPage] = useState(1);
     const [totalChannels, setTotalChannels] = useState(0);
-    const PAGE_SIZE = 50;
+    const [pageSize, setPageSize] = useState(50);
     const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
     const [searchQuery, setSearchQuery] = useState('');
     const debouncedSearch = useDebounce(searchQuery, 300);
     const [sourceFilter, setSourceFilter] = useState('all');
+    const [m3uSourceFilter, setM3uSourceFilter] = useState('all');
     const [epgFilter, setEPGFilter] = useState('all');
     const [visibilityFilter, setVisibilityFilter] = useState('visible'); // visible, hidden, all
     const [helpOpened, setHelpOpened] = useState(false);
+
+    const playlists = usePlaylistsStore((s) => s.playlists);
+    const sourceOptions = useMemo(() => [
+        { value: 'all', label: 'All Sources' },
+        ...playlists.map(p => ({ value: `m3u-${p.id}`, label: p.name }))
+    ], [playlists]);
 
     // Channel mutation state
     const [editingChannel, setEditingChannel] = useState(null);
@@ -957,7 +966,7 @@ const GroupChannelsPanel = ({ selectedGroup: selectedGroupProp, onRefreshRef, on
             const params = new URLSearchParams({
                 channel_group: selectedGroup.name,
                 page: String(page),
-                page_size: String(PAGE_SIZE),
+                page_size: String(pageSize),
                 include_streams: 'true',
             });
             if (selectedProfileId && selectedProfileId !== '0') {
@@ -983,6 +992,9 @@ const GroupChannelsPanel = ({ selectedGroup: selectedGroupProp, onRefreshRef, on
             } else if (visibilityFilter === 'hidden') {
                 params.set('is_hidden', 'true');
             }
+            if (m3uSourceFilter && m3uSourceFilter !== 'all') {
+                params.set('stream_source', m3uSourceFilter);
+            }
 
             const response = await API.queryChannels(params);
             setChannels(response?.results || []);
@@ -992,15 +1004,41 @@ const GroupChannelsPanel = ({ selectedGroup: selectedGroupProp, onRefreshRef, on
         } finally {
             setLoading(false);
         }
-    }, [selectedGroup, selectedProfileId, page, debouncedSearch, sourceFilter, epgFilter, visibilityFilter]);
+    }, [selectedGroup, selectedProfileId, page, pageSize, debouncedSearch, sourceFilter, m3uSourceFilter, epgFilter, visibilityFilter]);
 
-    const handleSelectAll = useCallback(() => {
-        if (selectedIds.size === channels.length && channels.length > 0) {
+    const handleSelectAll = useCallback(async () => {
+        if (selectedIds.size === totalChannels && totalChannels > 0) {
             setSelectedIds(new Set());
         } else {
-            setSelectedIds(new Set(channels.map(c => c.id)));
+            // Fetch all matching IDs across all pages from the backend
+            const params = new URLSearchParams({
+                channel_group: selectedGroup.name,
+            });
+            if (selectedProfileId && selectedProfileId !== '0') {
+                params.set('channel_profile_id', selectedProfileId);
+            }
+            if (debouncedSearch) {
+                params.set('name', debouncedSearch);
+            }
+            if (sourceFilter === 'empty') {
+                params.set('only_streamless', 'true');
+            } else if (sourceFilter === 'with_streams') {
+                params.set('only_with_streams', 'true');
+            }
+            if (epgFilter === 'with_epg') {
+                params.set('has_epg', 'true');
+            } else if (epgFilter === 'without_epg') {
+                params.set('has_epg', 'false');
+            }
+            if (visibilityFilter === 'visible') {
+                params.set('is_hidden', 'false');
+            } else if (visibilityFilter === 'hidden') {
+                params.set('is_hidden', 'true');
+            }
+            const allIds = await API.queryChannelIds(params);
+            setSelectedIds(new Set(allIds));
         }
-    }, [channels, selectedIds.size]);
+    }, [selectedGroup, selectedProfileId, debouncedSearch, sourceFilter, epgFilter, visibilityFilter, selectedIds.size, totalChannels]);
 
     const handleBulkDelete = async () => {
         if (selectedIds.size === 0) return;
@@ -1134,7 +1172,7 @@ const GroupChannelsPanel = ({ selectedGroup: selectedGroupProp, onRefreshRef, on
     // Reset page to 1 whenever the group, profile, or filters change
     useEffect(() => {
         setPage(1);
-    }, [selectedGroup?.id, selectedProfileId, debouncedSearch, sourceFilter, epgFilter, visibilityFilter]);
+    }, [selectedGroup?.id, selectedProfileId, pageSize, debouncedSearch, sourceFilter, m3uSourceFilter, epgFilter, visibilityFilter]);
 
     // Register loadChannels so parent can trigger refresh (e.g. after DnD)
     useEffect(() => {
@@ -1324,6 +1362,14 @@ const GroupChannelsPanel = ({ selectedGroup: selectedGroupProp, onRefreshRef, on
                                 clearable={false}
                             />
                             <Select
+                                data={sourceOptions}
+                                value={m3uSourceFilter}
+                                onChange={setM3uSourceFilter}
+                                size="xs"
+                                w={140}
+                                clearable={false}
+                            />
+                            <Select
                                 data={[
                                     { value: 'all', label: 'All' },
                                     { value: 'with_epg', label: 'EPG' },
@@ -1418,8 +1464,8 @@ const GroupChannelsPanel = ({ selectedGroup: selectedGroupProp, onRefreshRef, on
                                             <Group gap="xs" wrap="nowrap">
                                                 <Checkbox
                                                     size="xs"
-                                                    checked={selectedIds.size === (filteredChannels?.length || 0) && (filteredChannels?.length || 0) > 0}
-                                                    indeterminate={selectedIds.size > 0 && selectedIds.size < (filteredChannels?.length || 0)}
+                                                    checked={selectedIds.size === totalChannels && totalChannels > 0}
+                                                    indeterminate={selectedIds.size > 0 && selectedIds.size < totalChannels}
                                                     onChange={handleSelectAll}
                                                 />
                                                 <Text size="xs" fw={700}>#</Text>
@@ -1466,17 +1512,26 @@ const GroupChannelsPanel = ({ selectedGroup: selectedGroupProp, onRefreshRef, on
                                     <Text c="dimmed" size="xs">Drag streams from the right to create channels.</Text>
                                 </Box>
                             )}
-                            {totalChannels > PAGE_SIZE && (
-                                <Box py="md">
-                                    <Pagination
-                                        total={Math.ceil((totalChannels || 0) / PAGE_SIZE) || 1}
-                                        value={page}
-                                        onChange={setPage}
-                                        size="xs"
-                                        siblings={1}
-                                        boundaries={0}
-                                        justify="center"
-                                    />
+                            {totalChannels > pageSize && (
+                                <Box py="xs">
+                                    <Group gap={5} justify="center">
+                                        <Text size="xs">Page Size</Text>
+                                        <NativeSelect
+                                            size="xxs"
+                                            value={pageSize}
+                                            data={['25', '50', '100', '500', '1000', '2000', '5000', '10000']}
+                                            onChange={(e) => setPageSize(Number(e.target.value))}
+                                            style={{ paddingRight: 10 }}
+                                        />
+                                        <Pagination
+                                            total={Math.ceil((totalChannels || 0) / pageSize) || 1}
+                                            value={page}
+                                            onChange={setPage}
+                                            size="xs"
+                                            siblings={1}
+                                            boundaries={0}
+                                        />
+                                    </Group>
                                 </Box>
                             )}
                         </ScrollArea>

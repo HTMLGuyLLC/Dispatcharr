@@ -25,6 +25,7 @@ import GroupChannelsPanel from '../components/channel-organization/GroupChannels
 import StreamLibraryPanel from '../components/channel-organization/StreamLibraryPanel';
 import ErrorBoundary from '../components/ErrorBoundary';
 import EPGMatchModal from '../components/modals/EPGMatchModal';
+import RemapChannelsModal from '../components/modals/RemapChannelsModal';
 import useChannelsStore from '../store/channels';
 import useSettingsStore from '../store/settings';
 import useAuthStore from '../store/auth';
@@ -61,6 +62,10 @@ const PageContent = () => {
         profileId: null,
         scopeLabel: null,
     });
+
+    // Remap Channels modal state
+    const [remapModalOpen, setRemapModalOpen] = useState(false);
+    const [remapScope, setRemapScope] = useState(null);
 
     const theme = useMantineTheme();
     const env_mode = useSettingsStore((s) => s.environment.env_mode);
@@ -688,6 +693,10 @@ const PageContent = () => {
                                         selectedGroup={selectedGroup}
                                         onSelectGroup={setSelectedGroup}
                                         onMatchEpg={handleMatchEpg}
+                                        onRemapChannels={(scope) => {
+                                            setRemapScope(scope);
+                                            setRemapModalOpen(true);
+                                        }}
                                     />
                                 </Box>
                             </Allotment.Pane>
@@ -785,6 +794,16 @@ const PageContent = () => {
                 channelGroup={epgMatchState.channelGroup}
                 profileId={epgMatchState.profileId}
                 scopeLabel={epgMatchState.scopeLabel}
+            />
+
+            <RemapChannelsModal
+                opened={remapModalOpen}
+                onClose={() => setRemapModalOpen(false)}
+                scope={remapScope}
+                onSuccess={() => {
+                    // Refresh the channel data after a successful remap
+                    useChannelsStore.getState().fetchChannelGroups();
+                }}
             />
         </>
     );

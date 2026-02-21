@@ -1,5 +1,6 @@
 import React from 'react';
 import { Box, Image, Text, Loader, Center, Stack } from '@mantine/core';
+import logo from '../images/logo.png';
 
 const SplashScreen = () => {
     return (
@@ -12,7 +13,7 @@ const SplashScreen = () => {
                     }}
                 >
                     <Image
-                        src="/logo.png"
+                        src={logo}
                         w={120}
                         h={120}
                         fit="contain"

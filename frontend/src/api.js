@@ -186,6 +186,18 @@ export default class API {
     }
   }
 
+  static async queryChannelIds(params) {
+    try {
+      const response = await request(
+        `${host}/api/channels/channels/ids/?${params.toString()}`
+      );
+      return response.ids || [];
+    } catch (e) {
+      errorNotification('Failed to retrieve channel IDs', e);
+      return [];
+    }
+  }
+
   static async queryChannels(params) {
     try {
       API.lastQueryParams = params;
@@ -902,6 +914,42 @@ export default class API {
     } catch (e) {
       errorNotification('Failed to start bulk channel creation task', e);
       throw e;
+    }
+  }
+
+  static async remapChannels({ sourceType, sourceId, destType, destId, channelGroupId, profileId }) {
+    try {
+      const body = {
+        source_type: sourceType,
+        source_id: sourceId,
+        dest_type: destType,
+        dest_id: destId,
+      };
+      if (channelGroupId) body.channel_group_id = channelGroupId;
+      if (profileId) body.profile_id = profileId;
+
+      const response = await request(
+        `${host}/api/channels/channels/remap/`,
+        {
+          method: 'POST',
+          body,
+        }
+      );
+
+      return response;
+    } catch (e) {
+      errorNotification('Failed to remap channels', e);
+      throw e;
+    }
+  }
+
+  static async getXtreamAccounts() {
+    try {
+      const response = await request(`${host}/api/xtream/accounts/`);
+      return response;
+    } catch (e) {
+      errorNotification('Failed to retrieve Xtream accounts', e);
+      return [];
     }
   }
 

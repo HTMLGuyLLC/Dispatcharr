@@ -4,6 +4,7 @@ import {
   useTimeHelpers,
 } from '../../utils/dateTimeUtils.js';
 import React from 'react';
+import logo from '../../images/logo.png';
 import {
   Badge,
   Button,
@@ -185,7 +186,7 @@ const RecordingDetailsModal = ({
             fit="contain"
             radius="sm"
             alt={pr.title || recordingName}
-            fallbackSrc="/logo.png"
+            fallbackSrc={logo}
           />
           <Stack gap={4} flex={1}>
             <Group justify="space-between">
@@ -306,7 +307,7 @@ const RecordingDetailsModal = ({
           fit="contain"
           radius="sm"
           alt={recordingName}
-          fallbackSrc="/logo.png"
+          fallbackSrc={logo}
         />
         <Stack gap={8} style={{ flex: 1 }}>
           <Group justify="space-between" align="center">

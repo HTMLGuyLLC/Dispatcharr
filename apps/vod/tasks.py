@@ -1649,6 +1649,99 @@ def cleanup_orphaned_vod_content(stale_days=0, scan_start_time=None, account_id=
     return result
 
 
+@shared_task
+def clear_vod_for_account(account_id):
+    """Delete all VOD relations for a given M3U account and clean up orphaned content."""
+    try:
+        account = M3UAccount.objects.get(id=account_id)
+        logger.info(f"Clearing all VOD content for account {account.name} (ID: {account_id})")
+
+        # Delete episode relations first (they reference series which reference movies)
+        episode_count = M3UEpisodeRelation.objects.filter(m3u_account_id=account_id).count()
+        M3UEpisodeRelation.objects.filter(m3u_account_id=account_id).delete()
+
+        # Delete series relations
+        series_count = M3USeriesRelation.objects.filter(m3u_account_id=account_id).count()
+        M3USeriesRelation.objects.filter(m3u_account_id=account_id).delete()
+
+        # Delete movie relations
+        movie_count = M3UMovieRelation.objects.filter(m3u_account_id=account_id).count()
+        M3UMovieRelation.objects.filter(m3u_account_id=account_id).delete()
+
+        # Delete category relations
+        cat_count = M3UVODCategoryRelation.objects.filter(m3u_account_id=account_id).count()
+        M3UVODCategoryRelation.objects.filter(m3u_account_id=account_id).delete()
+
+        # Prune orphaned movies/series/episodes that no longer have any relations
+        cleanup_orphaned_vod_content()
+
+        result = (
+            f"Cleared VOD for account {account.name}: "
+            f"{movie_count} movie relations, {series_count} series relations, "
+            f"{episode_count} episode relations, {cat_count} category relations removed"
+        )
+        logger.info(result)
+        return result
+
+    except M3UAccount.DoesNotExist:
+        logger.warning(f"Account {account_id} not found for VOD clear")
+        return f"Account {account_id} not found"
+    except Exception as e:
+        logger.error(f"Error clearing VOD for account {account_id}: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@shared_task
+def clear_vod_for_category(account_id, category_id):
+    """Delete VOD relations for a specific category under an M3U account and clean up orphans."""
+    try:
+        account = M3UAccount.objects.get(id=account_id)
+        logger.info(f"Clearing VOD content for category {category_id} on account {account.name}")
+
+        # Find movie relations in this category
+        movie_rels = M3UMovieRelation.objects.filter(
+            m3u_account_id=account_id, category_id=category_id
+        )
+        movie_count = movie_rels.count()
+
+        # Find series relations in this category
+        series_rels = M3USeriesRelation.objects.filter(
+            m3u_account_id=account_id, category_id=category_id
+        )
+        # Delete episode relations for the affected series
+        affected_series_ids = list(series_rels.values_list('series_id', flat=True))
+        episode_count = 0
+        if affected_series_ids:
+            ep_rels = M3UEpisodeRelation.objects.filter(
+                m3u_account_id=account_id,
+                episode__series_id__in=affected_series_ids
+            )
+            episode_count = ep_rels.count()
+            ep_rels.delete()
+
+        series_count = series_rels.count()
+        series_rels.delete()
+        movie_rels.delete()
+
+        # Prune orphaned content
+        cleanup_orphaned_vod_content()
+
+        result = (
+            f"Cleared VOD for category {category_id} on account {account.name}: "
+            f"{movie_count} movie relations, {series_count} series relations, "
+            f"{episode_count} episode relations removed"
+        )
+        logger.info(result)
+        return result
+
+    except M3UAccount.DoesNotExist:
+        logger.warning(f"Account {account_id} not found for category VOD clear")
+        return f"Account {account_id} not found"
+    except Exception as e:
+        logger.error(f"Error clearing VOD for category {category_id}: {str(e)}")
+        return f"Error: {str(e)}"
+
+
 def handle_movie_id_conflicts(current_movie, relation, tmdb_id_to_set, imdb_id_to_set):
     """
     Handle potential duplicate key conflicts when setting tmdb_id or imdb_id.

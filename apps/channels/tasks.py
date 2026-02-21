@@ -3312,9 +3312,13 @@ def create_profile_from_source_task(profile_name, source_ids, user_id, include_c
             profile = ChannelProfile.objects.create(name=profile_name, created_by=user)
             logger.info(f"Created profile ID {profile.id}")
             
-            # 2. Get all streams from selected sources
-            # We only want active streams from these accounts
-            streams = Stream.objects.filter(m3u_account_id__in=source_ids).select_related('channel_group')
+            # 2. Get all streams from selected (active) sources
+            # Filter out inactive M3U accounts before pulling streams
+            active_source_ids = list(
+                M3UAccount.objects.filter(id__in=source_ids, is_active=True)
+                .values_list('id', flat=True)
+            )
+            streams = Stream.objects.filter(m3u_account_id__in=active_source_ids).select_related('channel_group')
             total_streams = streams.count()
             logger.info(f"Found {total_streams} streams across sources {source_ids}")
             

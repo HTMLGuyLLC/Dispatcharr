@@ -3,6 +3,7 @@ from django.http import HttpResponse, JsonResponse, Http404, HttpResponseForbidd
 from rest_framework.response import Response
 from django.urls import reverse
 from apps.channels.models import Channel, ChannelProfile, ChannelGroup, ProfileGroup
+from django.db.models import Q
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from apps.epg.models import ProgramData
@@ -152,6 +153,14 @@ def _get_channels_sorted_by_groups(base_filters, profile=None, merge_all_profile
         ordered_groups = list(ChannelGroup.objects.filter(id__in=group_ids).order_by('name'))
         groups_by_name_map = None
 
+    # Filter to only include channels that have at least one stream from an
+    # active source (or custom streams not tied to any source account).
+    active_source_q = (
+        Q(streams__m3u_account__is_active=True) |
+        Q(streams__xtream_account__is_active=True) |
+        Q(streams__m3u_account__isnull=True, streams__xtream_account__isnull=True)
+    )
+
     # Build the final channel list, group by group
     all_channels = []
     for group in ordered_groups:
@@ -166,6 +175,7 @@ def _get_channels_sorted_by_groups(base_filters, profile=None, merge_all_profile
                 ordering = _get_group_sort_ordering(merged_group)
                 group_channels = list(
                     Channel.objects.filter(**group_filters)
+                    .filter(active_source_q)
                     .select_related('channel_group', 'logo')
                     .distinct()
                     .order_by(*ordering)
@@ -176,6 +186,7 @@ def _get_channels_sorted_by_groups(base_filters, profile=None, merge_all_profile
             ordering = _get_group_sort_ordering(group)
             group_channels = list(
                 Channel.objects.filter(**group_filters)
+                .filter(active_source_q)
                 .select_related('channel_group', 'logo')
                 .distinct()
                 .order_by(*ordering)
@@ -188,6 +199,7 @@ def _get_channels_sorted_by_groups(base_filters, profile=None, merge_all_profile
         no_group_filters = {**base_filters, 'channel_group__isnull': True, 'is_hidden': False}
         no_group_channels = list(
             Channel.objects.filter(**no_group_filters)
+            .filter(active_source_q)
             .select_related('channel_group', 'logo')
             .distinct()
             .order_by('channel_number')
@@ -2339,6 +2351,10 @@ def xc_get_live_categories(request, user):
                 channelprofilemembership__enabled=True,
                 user_level__lte=user.user_level,
                 is_hidden=False
+            ).filter(
+                Q(streams__m3u_account__is_active=True) |
+                Q(streams__xtream_account__is_active=True) |
+                Q(streams__m3u_account__isnull=True, streams__xtream_account__isnull=True)
             ).exists()
             
             if has_channels:
@@ -2349,6 +2365,10 @@ def xc_get_live_categories(request, user):
             channels__isnull=False, 
             channels__user_level__lte=user.user_level,
             channels__is_hidden=False
+        ).filter(
+            Q(channels__streams__m3u_account__is_active=True) |
+            Q(channels__streams__xtream_account__is_active=True) |
+            Q(channels__streams__m3u_account__isnull=True, channels__streams__xtream_account__isnull=True)
         ).distinct().select_related('image').annotate(min_channel_number=Min('channels__channel_number')).order_by('min_channel_number')
     else:
         # User has specific limited profiles assigned
@@ -2426,7 +2446,11 @@ def xc_get_live_streams(request, user, category_id=None):
         if (user.custom_properties or {}).get('hide_adult_content', False):
             filters["is_adult"] = False
         
-        channels = Channel.objects.filter(**filters).distinct().select_related('logo').order_by("channel_number")
+        channels = Channel.objects.filter(**filters).filter(
+            Q(streams__m3u_account__is_active=True) |
+            Q(streams__xtream_account__is_active=True) |
+            Q(streams__m3u_account__isnull=True, streams__xtream_account__isnull=True)
+        ).distinct().select_related('logo').order_by("channel_number")
     elif user_profile_count == 0:
         # No profiles exist in system - give unrestricted access (old behavior)
         filters = {"user_level__lte": user.user_level, "is_hidden": False}
@@ -2435,7 +2459,11 @@ def xc_get_live_streams(request, user, category_id=None):
         # Hide adult content if user preference is set
         if (user.custom_properties or {}).get('hide_adult_content', False):
             filters["is_adult"] = False
-        channels = Channel.objects.filter(**filters).select_related('logo').order_by("channel_number")
+        channels = Channel.objects.filter(**filters).filter(
+            Q(streams__m3u_account__is_active=True) |
+            Q(streams__xtream_account__is_active=True) |
+            Q(streams__m3u_account__isnull=True, streams__xtream_account__isnull=True)
+        ).distinct().select_related('logo').order_by("channel_number")
     else:
         # User has specific limited profiles assigned
         # Get active group IDs from user's profiles
@@ -2469,7 +2497,11 @@ def xc_get_live_streams(request, user, category_id=None):
         # Hide adult content if user preference is set
         if (user.custom_properties or {}).get('hide_adult_content', False):
             filters["is_adult"] = False
-        channels = Channel.objects.filter(**filters).distinct().select_related('logo').order_by("channel_number")
+        channels = Channel.objects.filter(**filters).filter(
+            Q(streams__m3u_account__is_active=True) |
+            Q(streams__xtream_account__is_active=True) |
+            Q(streams__m3u_account__isnull=True, streams__xtream_account__isnull=True)
+        ).distinct().select_related('logo').order_by("channel_number")
 
     # Build collision-free mapping for XC clients (which require integers)
     # This ensures channels with float numbers don't conflict with existing integers

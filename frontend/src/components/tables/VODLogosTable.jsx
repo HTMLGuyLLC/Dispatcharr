@@ -22,6 +22,7 @@ import {
 } from '@mantine/core';
 import { ExternalLink, Search, Trash2, Trash, SquareMinus } from 'lucide-react';
 import useVODLogosStore from '../../store/vodLogos';
+import logo from '../../images/logo.png';
 import useLocalStorage from '../../hooks/useLocalStorage';
 import { CustomTable, useTable } from './CustomTable';
 import ConfirmationDialog from '../ConfirmationDialog';
@@ -270,7 +271,7 @@ export default function VODLogosTable() {
               width={40}
               height={30}
               fit="contain"
-              fallbackSrc="/logo.png"
+              fallbackSrc={logo}
               style={{
                 transition: 'transform 0.3s ease',
                 cursor: 'pointer',
@@ -636,12 +637,12 @@ export default function VODLogosTable() {
         showDeleteFileOption={
           deleteTarget && deleteTarget.length > 1
             ? Array.from(deleteTarget).some((id) => {
-                const logo = logos.find((l) => l.id === id);
-                return logo && logo.url && logo.url.startsWith('/data/logos');
-              })
+              const logo = logos.find((l) => l.id === id);
+              return logo && logo.url && logo.url.startsWith('/data/logos');
+            })
             : logoToDelete &&
-              logoToDelete.url &&
-              logoToDelete.url.startsWith('/data/logos')
+            logoToDelete.url &&
+            logoToDelete.url.startsWith('/data/logos')
         }
         deleteFileLabel={
           deleteTarget && deleteTarget.length > 1

@@ -18,6 +18,7 @@ import { Dropzone } from '@mantine/dropzone';
 import { Upload, FileImage, X } from 'lucide-react';
 import { notifications } from '@mantine/notifications';
 import API from '../../api';
+import logo from '../../images/logo.png';
 
 const schema = Yup.object({
   name: Yup.string().required('Name is required'),
@@ -266,7 +267,7 @@ const LogoForm = ({ logo = null, isOpen, onClose, onSuccess }) => {
                   width={100}
                   height={75}
                   fit="contain"
-                  fallbackSrc="/logo.png"
+                  fallbackSrc={logo}
                   style={{
                     transition: 'transform 0.3s ease',
                     cursor: 'pointer',

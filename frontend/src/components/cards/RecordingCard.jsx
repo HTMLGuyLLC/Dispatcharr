@@ -7,6 +7,7 @@ import {
 } from '../../utils/dateTimeUtils.js';
 import { notifications } from '@mantine/notifications';
 import React from 'react';
+import logo from '../../images/logo.png';
 import {
   ActionIcon,
   Badge,
@@ -296,7 +297,7 @@ const RecordingCard = ({ recording, onOpenDetails, onOpenRecurring }) => {
           fit="contain"
           radius="sm"
           alt={recordingName}
-          fallbackSrc="/logo.png"
+          fallbackSrc={logo}
         />
         <Stack gap={6} flex={1}>
           {!isSeriesGroup && subTitle && (

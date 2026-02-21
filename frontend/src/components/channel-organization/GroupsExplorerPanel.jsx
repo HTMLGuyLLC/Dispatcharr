@@ -43,6 +43,7 @@ import {
     IconEye,
     IconEyeOff,
     IconX,
+    IconArrowsShuffle,
 } from '@tabler/icons-react';
 
 import useChannelsStore from '../../store/channels';
@@ -271,7 +272,7 @@ const ImagePreviewModal = ({ opened, onClose, imageUrl, groupName }) => {
 };
 
 /* ─── Single group row (nested under a profile) ─── */
-const GroupItem = React.memo(({ group, isSelected, onSelect, profileId, onRename, onDelete, onDuplicate, onMatchEpg, fetchChannelGroups, fetchChannelProfiles }) => {
+const GroupItem = React.memo(({ group, isSelected, onSelect, profileId, onRename, onDelete, onDuplicate, onMatchEpg, onRemapChannels, fetchChannelGroups, fetchChannelProfiles }) => {
     const [isEditing, setIsEditing] = useState(false);
     const [editValue, setEditValue] = useState(group.name);
     const inputRef = React.useRef(null);
@@ -617,6 +618,15 @@ const GroupItem = React.memo(({ group, isSelected, onSelect, profileId, onRename
                             Auto-Match EPG
                         </Menu.Item>
                         <Menu.Item
+                            leftSection={<IconArrowsShuffle size={14} />}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onRemapChannels?.({ channelGroupId: group.id, scopeLabel: `group "${group.name}"` });
+                            }}
+                        >
+                            Remap Channels
+                        </Menu.Item>
+                        <Menu.Item
                             leftSection={group.is_active === false ? <IconEye size={14} /> : <IconEyeOff size={14} />}
                             onClick={handleToggleHidden}
                         >
@@ -653,6 +663,7 @@ const ProfileSection = React.memo(({
     onRenameProfile,
     onDeleteProfile,
     onMatchEpg,
+    onRemapChannels,
     fetchChannelGroups,
     fetchChannelProfiles,
 }) => {
@@ -846,6 +857,15 @@ const ProfileSection = React.memo(({
                         >
                             Auto-Match EPG
                         </Menu.Item>
+                        <Menu.Item
+                            leftSection={<IconArrowsShuffle size={14} />}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onRemapChannels?.({ profileId: profile.id, scopeLabel: `profile "${profile.name}"` });
+                            }}
+                        >
+                            Remap Channels
+                        </Menu.Item>
                         <Menu.Divider />
                         <Menu.Item
                             leftSection={<IconTrash size={14} />}
@@ -874,6 +894,7 @@ const ProfileSection = React.memo(({
                                     onDelete={onDeleteGroup}
                                     onDuplicate={onDuplicateGroup}
                                     onMatchEpg={onMatchEpg}
+                                    onRemapChannels={onRemapChannels}
                                     fetchChannelGroups={fetchChannelGroups}
                                     fetchChannelProfiles={fetchChannelProfiles}
                                 />
@@ -922,7 +943,7 @@ const ProfileSection = React.memo(({
 });
 
 /* ─── Main panel: always shows profiles → groups tree ─── */
-const GroupsExplorerPanel = ({ selectedGroup, onSelectGroup, onMatchEpg }) => {
+const GroupsExplorerPanel = ({ selectedGroup, onSelectGroup, onMatchEpg, onRemapChannels }) => {
     const channelGroups = useChannelsStore((s) => s.channelGroups);
     const profiles = useChannelsStore((s) => s.profiles);
     const fetchChannelGroups = useChannelsStore((s) => s.fetchChannelGroups);
@@ -1206,6 +1227,7 @@ const GroupsExplorerPanel = ({ selectedGroup, onSelectGroup, onMatchEpg }) => {
                                 onRenameProfile={(p) => setRenameModal({ open: true, type: 'profile', target: p, name: p.name })}
                                 onDeleteProfile={(p) => setDeleteModal({ open: true, type: 'profile', target: p })}
                                 onMatchEpg={onMatchEpg}
+                                onRemapChannels={onRemapChannels}
                                 fetchChannelGroups={fetchChannelGroups}
                                 fetchChannelProfiles={fetchChannelProfiles}
                             />

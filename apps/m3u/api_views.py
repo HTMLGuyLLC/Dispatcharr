@@ -147,54 +147,57 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
         # Check if VOD setting changed and trigger refresh if needed
         new_vod_enabled = request.data.get("enable_vod", old_vod_enabled)
 
-        if (
-            instance.account_type == M3UAccount.Types.XC
-            and not old_vod_enabled
-            and new_vod_enabled
-        ):
-            # Create Uncategorized categories immediately so they're available in the UI
-            from apps.vod.models import VODCategory, M3UVODCategoryRelation
+        if instance.account_type == M3UAccount.Types.XC:
+            if not old_vod_enabled and new_vod_enabled:
+                # VOD was just enabled - create categories and trigger refresh
+                from apps.vod.models import VODCategory, M3UVODCategoryRelation
 
-            # Create movie Uncategorized category
-            movie_category, _ = VODCategory.objects.get_or_create(
-                name="Uncategorized",
-                category_type="movie",
-                defaults={}
-            )
+                # Create movie Uncategorized category
+                movie_category, _ = VODCategory.objects.get_or_create(
+                    name="Uncategorized",
+                    category_type="movie",
+                    defaults={}
+                )
 
-            # Create series Uncategorized category
-            series_category, _ = VODCategory.objects.get_or_create(
-                name="Uncategorized",
-                category_type="series",
-                defaults={}
-            )
+                # Create series Uncategorized category
+                series_category, _ = VODCategory.objects.get_or_create(
+                    name="Uncategorized",
+                    category_type="series",
+                    defaults={}
+                )
 
-            # Create relations for both categories (disabled by default until first refresh)
-            account_custom_props = instance.custom_properties or {}
-            auto_enable_new = account_custom_props.get("auto_enable_new_groups_vod", True)
+                # Create relations for both categories (disabled by default until first refresh)
+                account_custom_props = instance.custom_properties or {}
+                auto_enable_new = account_custom_props.get("auto_enable_new_groups_vod", True)
 
-            M3UVODCategoryRelation.objects.get_or_create(
-                category=movie_category,
-                m3u_account=instance,
-                defaults={
-                    'enabled': auto_enable_new,
-                    'custom_properties': {}
-                }
-            )
+                M3UVODCategoryRelation.objects.get_or_create(
+                    category=movie_category,
+                    m3u_account=instance,
+                    defaults={
+                        'enabled': auto_enable_new,
+                        'custom_properties': {}
+                    }
+                )
 
-            M3UVODCategoryRelation.objects.get_or_create(
-                category=series_category,
-                m3u_account=instance,
-                defaults={
-                    'enabled': auto_enable_new,
-                    'custom_properties': {}
-                }
-            )
+                M3UVODCategoryRelation.objects.get_or_create(
+                    category=series_category,
+                    m3u_account=instance,
+                    defaults={
+                        'enabled': auto_enable_new,
+                        'custom_properties': {}
+                    }
+                )
 
-            # Trigger full VOD refresh
-            from apps.vod.tasks import refresh_vod_content
+                # Trigger full VOD refresh
+                from apps.vod.tasks import refresh_vod_content
 
-            refresh_vod_content.delay(instance.id)
+                refresh_vod_content.delay(instance.id)
+
+            elif old_vod_enabled and not new_vod_enabled:
+                # VOD was just disabled - clear all VOD data for this account
+                from apps.vod.tasks import clear_vod_for_account
+
+                clear_vod_for_account.delay(instance.id)
 
         # After the instance is updated, return the response
         return response
@@ -213,6 +216,13 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 request.data["status"] = M3UAccount.Status.IDLE
             else:
                 request.data["status"] = M3UAccount.Status.DISABLED
+
+                # Account is being disabled - clear its VOD data
+                vod_enabled = (instance.custom_properties or {}).get("enable_vod", False)
+                if vod_enabled:
+                    from apps.vod.tasks import clear_vod_for_account
+
+                    clear_vod_for_account.delay(instance.id)
 
         # Continue with regular partial update
         return super().partial_update(request, *args, **kwargs)
@@ -254,6 +264,25 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
+    @action(detail=True, methods=["post"], url_path="clear-vod")
+    def clear_vod(self, request, pk=None):
+        """Explicitly clear all VOD data for this account"""
+        account = self.get_object()
+
+        try:
+            from apps.vod.tasks import clear_vod_for_account
+
+            clear_vod_for_account.delay(account.id)
+            return Response(
+                {"message": f"VOD clear initiated for account {account.name}"},
+                status=status.HTTP_202_ACCEPTED,
+            )
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to initiate VOD clear: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
     @action(detail=True, methods=["patch"], url_path="group-settings")
     def update_group_settings(self, request, pk=None):
         """Update auto channel sync settings for M3U account groups"""
@@ -287,6 +316,20 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
                 custom_properties = setting.get("custom_properties", {})
 
                 if category_id:
+                    # Check if we're disabling a previously-enabled category
+                    if not enabled:
+                        try:
+                            existing_rel = M3UVODCategoryRelation.objects.get(
+                                category_id=category_id, m3u_account=account
+                            )
+                            if existing_rel.enabled:
+                                # Category is being disabled - clear its VOD data
+                                from apps.vod.tasks import clear_vod_for_category
+
+                                clear_vod_for_category.delay(account.id, category_id)
+                        except M3UVODCategoryRelation.DoesNotExist:
+                            pass
+
                     M3UVODCategoryRelation.objects.update_or_create(
                         category_id=category_id,
                         m3u_account=account,

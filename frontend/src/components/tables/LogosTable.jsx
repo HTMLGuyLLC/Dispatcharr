@@ -37,6 +37,7 @@ import {
 import { CustomTable, useTable } from './CustomTable';
 import ConfirmationDialog from '../ConfirmationDialog';
 import { notifications } from '@mantine/notifications';
+import logo from '../../images/logo.png';
 
 const LogoRowActions = ({ theme, row, editLogo, deleteLogo }) => {
   const [tableSize, _] = useLocalStorage('table-size', 'default');
@@ -387,7 +388,7 @@ const LogosTable = () => {
               width={40}
               height={30}
               fit="contain"
-              fallbackSrc="/logo.png"
+              fallbackSrc={logo}
               style={{
                 transition: 'transform 0.3s ease',
                 cursor: 'pointer',
@@ -851,12 +852,12 @@ const LogosTable = () => {
         showDeleteFileOption={
           isBulkDelete
             ? Array.from(selectedRows).some((id) => {
-                const logo = Object.values(logos).find((l) => l.id === id);
-                return logo && logo.url && logo.url.startsWith('/data/logos');
-              })
+              const logo = Object.values(logos).find((l) => l.id === id);
+              return logo && logo.url && logo.url.startsWith('/data/logos');
+            })
             : logoToDelete &&
-              logoToDelete.url &&
-              logoToDelete.url.startsWith('/data/logos')
+            logoToDelete.url &&
+            logoToDelete.url.startsWith('/data/logos')
         }
         deleteFileLabel={
           isBulkDelete

@@ -126,7 +126,7 @@ describe('RecordingCardUtils', () => {
       vi.stubEnv('DEV', false);
       const result = getPosterUrl(null, {}, '');
 
-      expect(result).toBe('/logo.png');
+      expect(result).toContain('logo.png');
     });
 
     it('prepends dev server URL in dev mode for relative paths', () => {

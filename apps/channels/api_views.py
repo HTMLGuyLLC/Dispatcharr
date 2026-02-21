@@ -864,6 +864,18 @@ class ChannelViewSet(viewsets.ModelViewSet):
         if only_with_streams:
             q_filters &= Q(streams__isnull=False)
 
+        stream_source = self.request.query_params.get("stream_source", None)
+        if stream_source:
+            try:
+                if stream_source.startswith("m3u-"):
+                    m3u_id = int(stream_source.replace("m3u-", ""))
+                    q_filters &= Q(streams__m3u_account_id=m3u_id)
+                elif stream_source.startswith("xtream-"):
+                    xtream_id = int(stream_source.replace("xtream-", ""))
+                    q_filters &= Q(streams__xtream_account_id=xtream_id)
+            except (ValueError, TypeError):
+                pass
+
         has_epg = self.request.query_params.get("has_epg", None)
         if has_epg is not None:
             if str(has_epg).lower() in ("1", "true", "yes", "on"):
@@ -933,6 +945,12 @@ class ChannelViewSet(viewsets.ModelViewSet):
         )
         context["include_streams"] = include_streams
         return context
+
+    @action(detail=False, methods=["get"], url_path="ids")
+    def get_ids(self, request):
+        """Return a flat list of channel IDs matching the current filters, ignoring pagination."""
+        queryset = self.filter_queryset(self.get_queryset())
+        return Response({"ids": list(queryset.values_list('id', flat=True))})
 
     @action(detail=False, methods=["patch"], url_path="edit/bulk")
     def edit_bulk(self, request):
@@ -1865,6 +1883,171 @@ class ChannelViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @extend_schema(
+        methods=["POST"],
+        description="Remap channel streams from one source to another using tvg_id matching.",
+        request=inline_serializer(
+            name="RemapChannelsRequest",
+            fields={
+                "source_type": serializers.ChoiceField(
+                    choices=["m3u", "xtream"],
+                    help_text="Type of source account",
+                ),
+                "source_id": serializers.IntegerField(
+                    help_text="ID of the source account",
+                ),
+                "dest_type": serializers.ChoiceField(
+                    choices=["m3u", "xtream"],
+                    help_text="Type of destination account",
+                ),
+                "dest_id": serializers.IntegerField(
+                    help_text="ID of the destination account",
+                ),
+                "channel_group_id": serializers.IntegerField(
+                    help_text="Scope to a single channel group",
+                    required=False,
+                ),
+                "profile_id": serializers.IntegerField(
+                    help_text="Scope to all groups in a profile",
+                    required=False,
+                ),
+            },
+        ),
+    )
+    @action(detail=False, methods=["post"], url_path="remap")
+    def remap(self, request):
+        """
+        Remap channel streams from one source to another by matching tvg_id.
+        For each channel in the scope, find streams from the source, look up
+        a matching stream (by tvg_id) in the destination, and swap them.
+        """
+        source_type = request.data.get("source_type")
+        source_id = request.data.get("source_id")
+        dest_type = request.data.get("dest_type")
+        dest_id = request.data.get("dest_id")
+        channel_group_id = request.data.get("channel_group_id")
+        profile_id = request.data.get("profile_id")
+
+        if not all([source_type, source_id, dest_type, dest_id]):
+            return Response(
+                {"error": "source_type, source_id, dest_type, and dest_id are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Build source filter for ChannelStream lookups
+        source_stream_filter = {}
+        if source_type == "m3u":
+            source_stream_filter["stream__m3u_account_id"] = source_id
+        else:
+            source_stream_filter["stream__xtream_account_id"] = source_id
+
+        # Build destination stream query to create a tvg_id lookup dict
+        dest_stream_filter = {}
+        if dest_type == "m3u":
+            dest_stream_filter["m3u_account_id"] = dest_id
+        else:
+            dest_stream_filter["xtream_account_id"] = dest_id
+
+        # Build the set of channels to process
+        channel_qs = Channel.objects.all()
+        if channel_group_id:
+            channel_qs = channel_qs.filter(channel_group_id=channel_group_id)
+        elif profile_id:
+            # Get all group IDs in this profile
+            group_ids = ProfileGroup.objects.filter(
+                profile_id=profile_id
+            ).values_list("channel_group_id", flat=True)
+            channel_qs = channel_qs.filter(channel_group_id__in=group_ids)
+        else:
+            return Response(
+                {"error": "Either channel_group_id or profile_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Pre-build a lookup of tvg_id -> destination stream
+        # If multiple streams share a tvg_id, prefer one in the same group
+        dest_streams = Stream.objects.filter(
+            **dest_stream_filter
+        ).exclude(
+            tvg_id__isnull=True
+        ).exclude(
+            tvg_id=""
+        ).only("id", "tvg_id", "channel_group_id", "name")
+
+        # Build dict: tvg_id -> list of dest streams
+        dest_by_tvg_id = {}
+        for s in dest_streams:
+            dest_by_tvg_id.setdefault(s.tvg_id, []).append(s)
+
+        remapped_count = 0
+        errors = []
+
+        channel_ids = list(channel_qs.values_list("id", flat=True))
+
+        # Process in batches to avoid loading everything at once
+        with transaction.atomic():
+            # Get all ChannelStream entries for these channels from the source
+            cs_entries = ChannelStream.objects.filter(
+                channel_id__in=channel_ids,
+                **source_stream_filter,
+            ).select_related("stream", "channel")
+
+            for cs in cs_entries:
+                source_stream = cs.stream
+                tvg_id = source_stream.tvg_id
+
+                if not tvg_id:
+                    errors.append({
+                        "channel_name": cs.channel.name,
+                        "channel_id": cs.channel.id,
+                        "tvg_id": None,
+                        "reason": "Source stream has no tvg_id",
+                    })
+                    continue
+
+                candidates = dest_by_tvg_id.get(tvg_id, [])
+                if not candidates:
+                    errors.append({
+                        "channel_name": cs.channel.name,
+                        "channel_id": cs.channel.id,
+                        "tvg_id": tvg_id,
+                        "reason": "No matching stream found in destination",
+                    })
+                    continue
+
+                # Prefer a candidate in the same channel group, otherwise take the first
+                dest_stream = None
+                for c in candidates:
+                    if c.channel_group_id == cs.channel.channel_group_id:
+                        dest_stream = c
+                        break
+                if not dest_stream:
+                    dest_stream = candidates[0]
+
+                # Check if already using this dest stream (skip if same)
+                if cs.stream_id == dest_stream.id:
+                    continue
+
+                # Check if a ChannelStream already exists for this channel+dest_stream
+                existing = ChannelStream.objects.filter(
+                    channel=cs.channel, stream=dest_stream
+                ).exists()
+
+                if existing:
+                    # Just remove the old source entry
+                    cs.delete()
+                else:
+                    # Swap: update the stream reference in-place to preserve order
+                    cs.stream = dest_stream
+                    cs.save(update_fields=["stream_id"])
+
+                remapped_count += 1
+
+        return Response({
+            "success": True,
+            "remapped_count": remapped_count,
+            "errors": errors,
+        })
 
 
 # ─────────────────────────────────────────────────────────

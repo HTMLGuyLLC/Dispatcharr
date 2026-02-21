@@ -28,28 +28,42 @@ export const clearStreamsInLocalDb = async () => {
 }
 
 export const queryLocalStreams = async ({ search = '', source = null, channelGroupsMap = {} }) => {
-    let collection = db.streams.toCollection();
+    let results;
 
+    // Use Dexie index for source filtering instead of JS .filter()
     if (source) {
-        const sourceStr = String(source);
-        collection = collection.filter(item => {
-            const itemM3u = item.m3u_account ? String(item.m3u_account) : null;
-            const itemXtream = item.xtream_account ? String(item.xtream_account) : null;
-            return itemM3u === sourceStr || itemXtream === sourceStr;
-        });
+        const sourceNum = Number(source);
+        const [m3uResults, xtreamResults] = await Promise.all([
+            db.streams.where('m3u_account').equals(sourceNum).toArray(),
+            db.streams.where('xtream_account').equals(sourceNum).toArray(),
+        ]);
+        // Merge & deduplicate by id
+        const seen = new Set();
+        results = [];
+        for (const s of m3uResults) {
+            if (!seen.has(s.id)) { seen.add(s.id); results.push(s); }
+        }
+        for (const s of xtreamResults) {
+            if (!seen.has(s.id)) { seen.add(s.id); results.push(s); }
+        }
+    } else {
+        results = await db.streams.toArray();
     }
 
+    // Multi-word search: every token must appear in at least one searchable field
     if (search) {
-        const query = search.toLowerCase();
-        collection = collection.filter(s => {
-            if (s.name.toLowerCase().includes(query)) return true;
+        const tokens = search.toLowerCase().split(/\s+/).filter(Boolean);
+        results = results.filter(s => {
+            const name = (s.name || '').toLowerCase();
             const groupId = s.channel_group;
-            const groupName = channelGroupsMap[groupId]?.name?.toLowerCase();
-            return groupName && groupName.includes(query);
+            const groupName = (channelGroupsMap[groupId]?.name || '').toLowerCase();
+            const tvgId = (s.tvg_id || '').toLowerCase();
+            const gracenoteId = (s.custom_properties?.gracenote_id || s.custom_properties?.tvc_guide_stationid || '').toLowerCase();
+            const haystack = `${name} ${groupName} ${tvgId} ${gracenoteId}`;
+            return tokens.every(t => haystack.includes(t));
         });
     }
 
-    const results = await collection.toArray();
     console.log(`[LocalDB] Query results: ${results.length} streams (search: "${search}", source: "${source}")`);
     return results;
 };
