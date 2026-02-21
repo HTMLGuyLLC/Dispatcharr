@@ -435,7 +435,8 @@ const StreamLibraryPanel = ({ selectedGroup }) => {
         setSyncProgress(0);
         console.log('[StreamLibrary] Starting background sync...');
         try {
-            const countResponse = await API.queryStreams(new URLSearchParams({ page_size: '1', page: '1' }));
+            // Use the lightweight bulk-sync endpoint for the initial count
+            const countResponse = await API.bulkSyncStreams(1, 1);
             if (!countResponse || typeof countResponse.count === 'undefined') {
                 throw new Error('Could not get total stream count from API');
             }
@@ -445,31 +446,44 @@ const StreamLibraryPanel = ({ selectedGroup }) => {
 
             const batchSize = 5000;
             const totalPages = Math.ceil(totalCount / batchSize);
+            const CONCURRENCY = 3; // Fetch up to 3 pages in parallel
 
             await clearStreamsInLocalDb();
             console.log('[StreamLibrary] Cleared local DB for fresh sync.');
 
-            for (let i = 0; i < totalPages; i++) {
-                console.log(`[StreamLibrary] Fetching batch ${i + 1}/${totalPages}...`);
-                const params = new URLSearchParams({
-                    page: String(i + 1),
-                    page_size: String(batchSize)
-                });
-                const response = await API.queryStreams(params);
-                if (response?.results) {
-                    await syncStreamsToLocalDb(response.results);
-                }
-                setSyncProgress(Math.round(((i + 1) / totalPages) * 100));
+            let syncedCount = 0;
 
-                // Refresh the UI every few batches so groups appear while syncing
-                if (i % 2 === 0 || i === totalPages - 1) {
-                    setForceRefresh(prev => prev + 1);
+            // Process pages in parallel batches
+            for (let batchStart = 0; batchStart < totalPages; batchStart += CONCURRENCY) {
+                const batchEnd = Math.min(batchStart + CONCURRENCY, totalPages);
+                const pageNums = [];
+                for (let i = batchStart; i < batchEnd; i++) {
+                    pageNums.push(i + 1);
                 }
+
+                console.log(`[StreamLibrary] Fetching pages ${pageNums.join(', ')} in parallel (synced ${syncedCount}/${totalCount})...`);
+
+                // Fetch pages in parallel using the lightweight endpoint
+                const responses = await Promise.all(
+                    pageNums.map(pageNum => API.bulkSyncStreams(pageNum, batchSize))
+                );
+
+                // Store results sequentially to avoid IndexedDB write contention
+                for (const response of responses) {
+                    const results = response?.results || [];
+                    if (results.length > 0) {
+                        await syncStreamsToLocalDb(results);
+                        syncedCount += results.length;
+                    }
+                }
+
+                setSyncProgress(Math.round((syncedCount / totalCount) * 100));
+                setForceRefresh(prev => prev + 1);
             }
-            console.log('[StreamLibrary] Sync completed successfully.');
+
+            console.log(`[StreamLibrary] Sync completed successfully. ${syncedCount} streams synced.`);
         } catch (error) {
             console.error('[StreamLibrary] Background sync failed:', error);
-            // Optionally show a notification
         } finally {
             setSyncing(false);
         }

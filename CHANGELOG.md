@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.5.0] - 2026-02-20
+
+### Fixed
+- Backend/Frontend: Fixed stream sync not populating all streams into the frontend local database. The backend `StreamPagination.max_page_size` (1000) was silently capping the frontend's requested `page_size` (5000), causing only a fraction of streams to be synced.
+
+### Added
+- Backend: Added lightweight `/api/channels/streams/bulk-sync/` endpoint that returns only the fields needed by the Stream Library (8 vs 24 fields), bypassing the serializer for maximum speed.
+
+### Changed
+- Frontend: Stream Library sync now fetches up to 3 pages in parallel for significantly faster sync times.
+- Frontend: Sync loop is now response-driven (tracks actual results received) instead of pre-calculating pages from batch size, making it robust against any page size capping.
+- Backend: Increased `StreamPagination.max_page_size` from 1000 to 5000 to match frontend batch sync size.
+
 ## [0.4.0] - 2026-02-20
 
 ### Added

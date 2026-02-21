@@ -95,7 +95,7 @@ class OrInFilter(django_filters.Filter):
 class StreamPagination(PageNumberPagination):
     page_size = 50  # Default page size to match frontend default
     page_size_query_param = "page_size"  # Allow clients to specify page size
-    max_page_size = 1000  # Prevent excessive page sizes that cause timeouts
+    max_page_size = 5000  # Must be >= frontend batch sync size (StreamLibraryPanel)
 
     def paginate_queryset(self, queryset, request, view=None):
         if not request.query_params.get(self.page_query_param):
@@ -163,7 +163,7 @@ class StreamViewSet(viewsets.ModelViewSet):
             return [Authenticated()]
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = super().get_queryset().select_related("m3u_account", "xtream_account", "channel_group", "stream_profile")
         # Exclude streams from inactive M3U accounts and inactive Xtream accounts
         qs = qs.exclude(m3u_account__is_active=False).exclude(xtream_account__is_active=False)
 
@@ -407,6 +407,38 @@ class StreamViewSet(viewsets.ModelViewSet):
             "channels_to_delete_count": total_channels_to_delete,
         })
 
+    @action(detail=False, methods=["get"], url_path="bulk-sync")
+    def bulk_sync(self, request, *args, **kwargs):
+        """
+        Lightweight endpoint for syncing streams to the frontend local DB.
+        Returns only the fields needed for display/search in the Stream Library,
+        bypassing the full serializer for maximum speed.
+        """
+        page = int(request.query_params.get("page", 1))
+        page_size = min(int(request.query_params.get("page_size", 5000)), 10000)
+
+        qs = self.get_queryset().only(
+            "id", "name", "channel_group_id", "m3u_account_id",
+            "xtream_account_id", "tvg_id", "stream_hash", "custom_properties"
+        )
+
+        total = qs.count()
+        start = (page - 1) * page_size
+        end = start + page_size
+
+        streams = list(
+            qs[start:end].values(
+                "id", "name", "tvg_id", "stream_hash", "custom_properties",
+                channel_group=F("channel_group_id"),
+                m3u_account=F("m3u_account_id"),
+                xtream_account=F("xtream_account_id"),
+            )
+        )
+
+        return Response({
+            "count": total,
+            "results": streams,
+        })
 
 
 

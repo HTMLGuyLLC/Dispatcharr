@@ -1046,6 +1046,21 @@ export default class API {
     }
   }
 
+  static async bulkSyncStreams(page, pageSize = 5000) {
+    try {
+      const params = new URLSearchParams({
+        page: String(page),
+        page_size: String(pageSize),
+      });
+      const response = await request(
+        `${host}/api/channels/streams/bulk-sync/?${params.toString()}`
+      );
+      return response;
+    } catch (e) {
+      errorNotification('Failed to sync streams', e);
+    }
+  }
+
   static async getStreamGroups() {
     try {
       const response = await request(`${host}/api/channels/streams/groups/`);
