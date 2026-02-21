@@ -429,11 +429,14 @@ class StreamViewSet(viewsets.ModelViewSet):
         streams = list(
             qs[start:end].values(
                 "id", "name", "tvg_id", "stream_hash", "custom_properties",
-                channel_group=F("channel_group_id"),
-                m3u_account=F("m3u_account_id"),
-                xtream_account=F("xtream_account_id"),
+                "channel_group_id", "m3u_account_id", "xtream_account_id",
             )
         )
+        # Rename _id keys to match frontend expectations
+        for s in streams:
+            s["channel_group"] = s.pop("channel_group_id")
+            s["m3u_account"] = s.pop("m3u_account_id")
+            s["xtream_account"] = s.pop("xtream_account_id")
 
         return Response({
             "count": total,

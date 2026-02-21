@@ -119,6 +119,7 @@ def sync_live_streams(account):
                     'stream_id': stream_id,
                     'stream_chno': stream_data.get('num'),
                     'logo_url': stream_data.get('stream_icon'),
+                    'tvg_id': stream_data.get('epg_channel_id') or '',
                     'is_stale': False,
                     'last_seen': timezone.now()
                 }
@@ -142,7 +143,7 @@ def sync_live_streams(account):
                 logger.info(f"Created {len(to_create)} new streams")
                 
             if to_update:
-                Stream.objects.bulk_update(to_update, ['name', 'url', 'channel_group', 'logo_url', 'is_stale', 'last_seen', 'stream_chno'], batch_size=1000)
+                Stream.objects.bulk_update(to_update, ['name', 'url', 'channel_group', 'logo_url', 'tvg_id', 'is_stale', 'last_seen', 'stream_chno'], batch_size=1000)
                 logger.info(f"Updated {len(to_update)} existing streams")
                 
             # Handle stale streams

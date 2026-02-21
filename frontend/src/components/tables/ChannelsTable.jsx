@@ -597,16 +597,19 @@ const ChannelsTable = ({ onReady }) => {
 
   const deleteChannel = async (id) => {
     console.log(`Deleting channel with ID: ${id}`);
-    table.setSelectedTableIds([]);
 
-    if (selectedChannelIds.length > 0) {
+    // Capture selected IDs before clearing, since we may need them for bulk delete
+    const currentSelectedIds = [...(table.selectedTableIds || [])];
+
+    // Check if there are multiple selections (beyond just the clicked channel)
+    if (currentSelectedIds.length > 1 || (currentSelectedIds.length === 1 && currentSelectedIds[0] !== id)) {
       // Use bulk delete for multiple selections
       setIsBulkDelete(true);
       setChannelToDelete(null);
 
       if (isWarningSuppressed('delete-channels')) {
         // Skip warning if suppressed
-        return executeDeleteChannels();
+        return executeDeleteChannels(currentSelectedIds);
       }
 
       setConfirmDeleteOpen(true);
@@ -614,6 +617,7 @@ const ChannelsTable = ({ onReady }) => {
     }
 
     // Single channel delete
+    table.setSelectedTableIds([]);
     setIsBulkDelete(false);
     setDeleteTarget(id);
     setChannelToDelete(channels[id]); // Store the channel object for displaying details
@@ -647,11 +651,12 @@ const ChannelsTable = ({ onReady }) => {
     setConfirmDeleteOpen(true);
   };
 
-  const executeDeleteChannels = async () => {
+  const executeDeleteChannels = async (channelIds) => {
+    const idsToDelete = channelIds || table.selectedTableIds;
     setIsLoading(true);
     setDeleting(true);
     try {
-      await API.deleteChannels(table.selectedTableIds);
+      await API.deleteChannels(idsToDelete);
       await API.requeryChannels();
       setSelectedChannelIds([]);
       table.setSelectedTableIds([]);

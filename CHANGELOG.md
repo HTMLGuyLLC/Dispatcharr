@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.5.2] - 2026-02-20
+
+### Fixed
+- Backend: Fixed Xtream account streams missing `tvg_id` — the provider's `epg_channel_id` was used for hash generation but never stored on the Stream object. Streams now get `tvg_id` populated on discovery and updated on refresh.
+
+## [0.5.1] - 2026-02-20
+
+### Fixed
+- Backend: Fixed `bulk-sync` endpoint crash (`ValueError: The annotation 'channel_group' conflicts with a field on the model`) by querying FK `_id` columns directly instead of using `F()` annotations that conflict with model field names.
+
 ## [0.5.0] - 2026-02-20
 
 ### Fixed

@@ -538,7 +538,7 @@ export default class API {
     }
   }
 
-  // @TODO: the bulk delete endpoint is currently broken
+
   static async deleteChannels(channel_ids) {
     try {
       await request(`${host}/api/channels/channels/bulk-delete/`, {
