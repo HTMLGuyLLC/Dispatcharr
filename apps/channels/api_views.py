@@ -1997,17 +1997,29 @@ class ChannelViewSet(viewsets.ModelViewSet):
             )
 
         def _normalize_stream_name(name):
-            """Normalize a stream name for comparison: strip pipes, collapse whitespace, lowercase."""
+            """Normalize a stream name for comparison: strip all punctuation/separators, collapse whitespace, lowercase."""
             if not name:
                 return ""
             import re as _re
-            # Replace pipe characters with spaces, collapse whitespace, strip, lowercase
-            norm = name.replace("|", " ")
+            # Remove all non-alphanumeric characters (|, :, -, etc.), collapse whitespace, lowercase
+            norm = _re.sub(r"[^a-zA-Z0-9\s]", " ", name)
             norm = _re.sub(r"\s+", " ", norm).strip().lower()
             return norm
 
+        def _normalize_tvg_id(tvg_id):
+            """Strip trailing digits from tvg_id for fuzzy matching.
+            e.g. 'TheWeatherChannel.us1' -> 'TheWeatherChannel.us'
+            Xtream providers often append instance numbers to tvg_ids.
+            """
+            if not tvg_id:
+                return ""
+            import re as _re
+            return _re.sub(r'\d+$', '', tvg_id)
+
         # Pre-build lookups for destination streams
-        # Primary: tvg_id -> list of dest streams
+        # Primary: base tvg_id (trailing digits stripped) -> list of dest streams
+        #   This handles both exact matches and provider-appended instance numbers
+        #   e.g. TheWeatherChannel.us and TheWeatherChannel.us1 both key as TheWeatherChannel.us
         # Secondary: normalized name -> list of dest streams (for fallback matching)
         all_dest_streams = Stream.objects.filter(
             **dest_stream_filter
@@ -2017,7 +2029,9 @@ class ChannelViewSet(viewsets.ModelViewSet):
         dest_by_name = {}
         for s in all_dest_streams:
             if s.tvg_id:
-                dest_by_tvg_id.setdefault(s.tvg_id, []).append(s)
+                base = _normalize_tvg_id(s.tvg_id)
+                if base:
+                    dest_by_tvg_id.setdefault(base, []).append(s)
             if s.name:
                 norm_name = _normalize_stream_name(s.name)
                 if norm_name:
@@ -2041,11 +2055,12 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 tvg_id = source_stream.tvg_id
                 source_name = _normalize_stream_name(source_stream.name)
 
-                # Try tvg_id match first
-                candidates = dest_by_tvg_id.get(tvg_id, []) if tvg_id else []
-
-                # Fall back to name match if no tvg_id or no tvg_id match found
+                # Step 1: tvg_id match (normalized — strips trailing digits)
                 matched_by = "tvg_id"
+                base_tvg = _normalize_tvg_id(tvg_id) if tvg_id else ""
+                candidates = dest_by_tvg_id.get(base_tvg, []) if base_tvg else []
+
+                # Step 2: Fall back to name match
                 if not candidates and source_name:
                     candidates = dest_by_name.get(source_name, [])
                     matched_by = "name"
