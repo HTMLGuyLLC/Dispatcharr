@@ -145,7 +145,7 @@ const RemapChannelsModal = ({ opened, onClose, scope, onSuccess }) => {
             <Stack gap="md">
                 <Text size="sm" c="dimmed">
                     Swap all channel streams from one source to another for {scopeLabel}.
-                    Channels are matched by <strong>tvg_id</strong>.
+                    Channels are matched by <strong>tvg_id</strong> first, then by <strong>channel name</strong>.
                 </Text>
 
                 <Select

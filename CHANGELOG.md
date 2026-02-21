@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.6.0] - 2026-02-21
+
+### Changed
+- Backend: Remap Channels now matches destination streams by **channel name** (case-insensitive) when `tvg_id` matching fails, significantly improving remap success rates for sources with missing or inconsistent tvg_ids.
+- Frontend: Updated Remap Channels modal description to reflect the new tvg_id + name matching behavior.
+
 ## [0.5.2] - 2026-02-20
 
 ### Fixed

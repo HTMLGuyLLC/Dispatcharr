@@ -1916,7 +1916,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
 
     @extend_schema(
         methods=["POST"],
-        description="Remap channel streams from one source to another using tvg_id matching.",
+        description="Remap channel streams from one source to another using tvg_id and channel name matching.",
         request=inline_serializer(
             name="RemapChannelsRequest",
             fields={
@@ -1948,9 +1948,10 @@ class ChannelViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["post"], url_path="remap")
     def remap(self, request):
         """
-        Remap channel streams from one source to another by matching tvg_id.
-        For each channel in the scope, find streams from the source, look up
-        a matching stream (by tvg_id) in the destination, and swap them.
+        Remap channel streams from one source to another by matching tvg_id
+        or channel name. For each channel in the scope, find streams from the
+        source, look up a matching stream (by tvg_id first, then by name) in
+        the destination, and swap them.
         """
         source_type = request.data.get("source_type")
         source_id = request.data.get("source_id")
@@ -1995,20 +1996,20 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Pre-build a lookup of tvg_id -> destination stream
-        # If multiple streams share a tvg_id, prefer one in the same group
-        dest_streams = Stream.objects.filter(
+        # Pre-build lookups for destination streams
+        # Primary: tvg_id -> list of dest streams
+        # Secondary: normalized name -> list of dest streams (for fallback matching)
+        all_dest_streams = Stream.objects.filter(
             **dest_stream_filter
-        ).exclude(
-            tvg_id__isnull=True
-        ).exclude(
-            tvg_id=""
         ).only("id", "tvg_id", "channel_group_id", "name")
 
-        # Build dict: tvg_id -> list of dest streams
         dest_by_tvg_id = {}
-        for s in dest_streams:
-            dest_by_tvg_id.setdefault(s.tvg_id, []).append(s)
+        dest_by_name = {}
+        for s in all_dest_streams:
+            if s.tvg_id:
+                dest_by_tvg_id.setdefault(s.tvg_id, []).append(s)
+            if s.name:
+                dest_by_name.setdefault(s.name.strip().lower(), []).append(s)
 
         remapped_count = 0
         errors = []
@@ -2026,23 +2027,23 @@ class ChannelViewSet(viewsets.ModelViewSet):
             for cs in cs_entries:
                 source_stream = cs.stream
                 tvg_id = source_stream.tvg_id
+                source_name = source_stream.name.strip().lower() if source_stream.name else ""
 
-                if not tvg_id:
-                    errors.append({
-                        "channel_name": cs.channel.name,
-                        "channel_id": cs.channel.id,
-                        "tvg_id": None,
-                        "reason": "Source stream has no tvg_id",
-                    })
-                    continue
+                # Try tvg_id match first
+                candidates = dest_by_tvg_id.get(tvg_id, []) if tvg_id else []
 
-                candidates = dest_by_tvg_id.get(tvg_id, [])
+                # Fall back to name match if no tvg_id or no tvg_id match found
+                matched_by = "tvg_id"
+                if not candidates and source_name:
+                    candidates = dest_by_name.get(source_name, [])
+                    matched_by = "name"
+
                 if not candidates:
                     errors.append({
                         "channel_name": cs.channel.name,
                         "channel_id": cs.channel.id,
                         "tvg_id": tvg_id,
-                        "reason": "No matching stream found in destination",
+                        "reason": "No matching stream found in destination (tried tvg_id and name)",
                     })
                     continue
 
