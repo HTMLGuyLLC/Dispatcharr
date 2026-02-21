@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import API from '../../api';
 import StreamProfileForm from '../forms/StreamProfile';
 import useStreamProfilesStore from '../../store/streamProfiles';
@@ -59,7 +59,6 @@ const StreamProfiles = () => {
   const [profile, setProfile] = useState(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [hideInactive, setHideInactive] = useState(false);
-  const [data, setData] = useState([]);
 
   const streamProfiles = useStreamProfilesStore((state) => state.profiles);
   const settings = useSettingsStore((s) => s.settings);
@@ -140,7 +139,7 @@ const StreamProfiles = () => {
         size: tableSize == 'compact' ? 50 : 75,
       },
     ],
-    []
+    [tableSize]
   );
 
   //optionally access the underlying virtualizer instance
@@ -163,7 +162,15 @@ const StreamProfiles = () => {
       return;
     }
 
-    await API.deleteStreamProfile(id);
+    try {
+      await API.deleteStreamProfile(id);
+    } catch (error) {
+      console.error('Failed to delete stream profile:', error);
+      notifications.show({
+        title: 'Failed to delete stream profile',
+        color: 'red.5',
+      });
+    }
   };
 
   const closeStreamProfileForm = () => {
@@ -190,21 +197,28 @@ const StreamProfiles = () => {
     setHideInactive(!hideInactive);
   };
 
-  const toggleProfileIsActive = async (profile) => {
-    await API.updateStreamProfile({
-      id: profile.id,
-      ...profile,
-      is_active: !profile.is_active,
-    });
-  };
+  const toggleProfileIsActive = useCallback(async (profile) => {
+    try {
+      await API.updateStreamProfile({
+        id: profile.id,
+        ...profile,
+        is_active: !profile.is_active,
+      });
+    } catch (error) {
+      console.error('Failed to toggle stream profile active state:', error);
+      notifications.show({
+        title: 'Failed to update stream profile',
+        color: 'red.5',
+      });
+    }
+  }, []);
 
-  useEffect(() => {
-    setData(
-      streamProfiles.filter((profile) =>
-        hideInactive && !profile.is_active ? false : true
-      )
-    );
-  }, [streamProfiles, hideInactive]);
+  const data = useMemo(
+    () => streamProfiles.filter((profile) =>
+      hideInactive && !profile.is_active ? false : true
+    ),
+    [streamProfiles, hideInactive]
+  );
 
   const renderHeaderCell = (header) => {
     return (

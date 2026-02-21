@@ -62,7 +62,7 @@ const getStatusColor = (status) => {
 
 const RowActions = ({ tableSize, row, editEPG, deleteEPG, refreshEPG }) => {
   const iconSize =
-    tableSize == 'default' ? 'sm' : tableSize == 'compact' ? 'xs' : 'md';
+    tableSize === 'default' ? 'sm' : tableSize === 'compact' ? 'xs' : 'md';
   const isDummyEPG = row.original.source_type === 'dummy';
 
   return (
@@ -377,7 +377,7 @@ const EPGsTable = () => {
       {
         id: 'actions',
         header: 'Actions',
-        size: tableSize == 'compact' ? 75 : 100,
+        size: tableSize === 'compact' ? 75 : 100,
       },
     ],
     [refreshProgress, fullDateTimeFormat]
@@ -477,7 +477,7 @@ const EPGsTable = () => {
 
   const renderHeaderCell = (header) => {
     let sortingIcon = ArrowUpDown;
-    if (sorting[0]?.id == header.id) {
+    if (sorting[0]?.id === header.id) {
       if (sorting[0].desc === false) {
         sortingIcon = ArrowUpNarrowWide;
       } else {
@@ -506,13 +506,12 @@ const EPGsTable = () => {
   };
 
   const onSortingChange = (column) => {
-    console.log(column);
     const sortField = sorting[0]?.id;
     const sortDirection = sorting[0]?.desc;
 
     const newSorting = [];
-    if (sortField == column) {
-      if (sortDirection == false) {
+    if (sortField === column) {
+      if (sortDirection === false) {
         newSorting[0] = {
           id: column,
           desc: true,
@@ -531,14 +530,11 @@ const EPGsTable = () => {
       const compareDesc = newSorting[0].desc;
 
       setData(
-        epgs.sort((a, b) => {
-          console.log(a);
-          console.log(newSorting[0].id);
-          if (a[compareColumn] !== b[compareColumn]) {
-            return compareDesc ? 1 : -1;
-          }
-
-          return 0;
+        Object.values(epgs).sort((a, b) => {
+          const aVal = a[compareColumn] ?? '';
+          const bVal = b[compareColumn] ?? '';
+          const cmp = String(aVal).localeCompare(String(bVal));
+          return compareDesc ? -cmp : cmp;
         })
       );
     }
@@ -633,7 +629,6 @@ const EPGsTable = () => {
 
       <Paper
         style={{
-          bgcolor: theme.palette.background.paper,
           borderRadius: 2,
         }}
       >
@@ -690,15 +685,14 @@ const EPGsTable = () => {
 
 Name: ${epgToDelete.name}
 Source Type: ${epgToDelete.source_type}
-${
-  epgToDelete.url
-    ? `URL: ${epgToDelete.url}`
-    : epgToDelete.api_key
-      ? `API Key: ${epgToDelete.api_key}`
-      : epgToDelete.file_path
-        ? `File Path: ${epgToDelete.file_path}`
-        : ''
-}
+${epgToDelete.url
+                  ? `URL: ${epgToDelete.url}`
+                  : epgToDelete.api_key
+                    ? `API Key: ${epgToDelete.api_key}`
+                    : epgToDelete.file_path
+                      ? `File Path: ${epgToDelete.file_path}`
+                      : ''
+                }
 
 This will remove all related program information and channel associations.
 This action cannot be undone.`}

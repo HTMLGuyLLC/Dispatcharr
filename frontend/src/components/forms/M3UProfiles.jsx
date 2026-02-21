@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import API from '../../api';
 import M3UProfile from './M3UProfile';
 import AccountInfoModal from './AccountInfoModal';
@@ -65,10 +65,7 @@ const M3UProfiles = ({ playlist = null, isOpen, onClose }) => {
   }, [allProfiles, playlist]);
 
   const editProfile = (profile = null) => {
-    if (profile) {
-      setProfile(profile);
-    }
-
+    setProfile(profile);
     setProfileEditorOpen(true);
   };
   const deleteProfile = async (id) => {
@@ -112,17 +109,27 @@ const M3UProfiles = ({ playlist = null, isOpen, onClose }) => {
     }
   };
 
-  const modifyMaxStreams = async (value, item) => {
+  const maxStreamsTimerRef = useRef(null);
+
+  const modifyMaxStreams = useCallback((value, item) => {
     if (!playlist || !playlist.id) return;
-    try {
-      await API.updateM3UProfile(playlist.id, {
-        ...item,
-        max_streams: value,
-      });
-    } catch (error) {
-      console.error('Error updating max streams:', error);
+
+    // Clear any pending debounce timer
+    if (maxStreamsTimerRef.current) {
+      clearTimeout(maxStreamsTimerRef.current);
     }
-  };
+
+    maxStreamsTimerRef.current = setTimeout(async () => {
+      try {
+        await API.updateM3UProfile(playlist.id, {
+          ...item,
+          max_streams: value,
+        });
+      } catch (error) {
+        console.error('Error updating max streams:', error);
+      }
+    }, 500);
+  }, [playlist]);
 
   const closeEditor = () => {
     setProfileEditorOpen(false);

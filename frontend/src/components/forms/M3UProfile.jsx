@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useForm } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
 import * as Yup from 'yup';
@@ -137,14 +137,21 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     fetchStreamUrl();
   }, [m3u]);
 
+  const prevPatternsRef = useRef(null);
+
   useEffect(() => {
     if (!websocketReady || !streamUrl) return;
+
+    // Only send when debouncedPatterns actually changed
+    const currentKey = `${debouncedPatterns['search']}|${debouncedPatterns['replace']}|${sampleInput || streamUrl}`;
+    if (prevPatternsRef.current === currentKey) return;
+    prevPatternsRef.current = currentKey;
 
     try {
       sendMessage(
         JSON.stringify({
           type: 'm3u_profile_test',
-          url: sampleInput || streamUrl, // Use sampleInput if provided, otherwise use streamUrl
+          url: sampleInput || streamUrl,
           search: debouncedPatterns['search'] || '',
           replace: debouncedPatterns['replace'] || '',
         })
@@ -152,7 +159,7 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     } catch (error) {
       console.error('Error sending WebSocket message:', error);
     }
-  }, [websocketReady, m3u, debouncedPatterns, streamUrl, sampleInput]);
+  }, [websocketReady, debouncedPatterns, streamUrl, sampleInput]);
 
   useEffect(() => {
     const handler = setTimeout(() => {
@@ -184,15 +191,33 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
     setSampleInput(e.target.value);
   };
 
-  // Local regex testing for immediate visual feedback
-  const getHighlightedSearchText = () => {
+  // Safe React-element-based highlighting (no dangerouslySetInnerHTML)
+  const getHighlightedSearchElements = () => {
     if (!searchPattern || !sampleInput) return sampleInput;
     try {
       const regex = new RegExp(searchPattern, 'g');
-      return sampleInput.replace(
-        regex,
-        (match) => `<mark style="background-color: #ffee58;">${match}</mark>`
-      );
+      const parts = [];
+      let lastIndex = 0;
+      let match;
+      let key = 0;
+      while ((match = regex.exec(sampleInput)) !== null) {
+        if (match.index > lastIndex) {
+          parts.push(sampleInput.slice(lastIndex, match.index));
+        }
+        parts.push(
+          <mark key={key++} style={{ backgroundColor: '#ffee58' }}>
+            {match[0]}
+          </mark>
+        );
+        lastIndex = regex.lastIndex;
+        if (match[0].length === 0) {
+          regex.lastIndex++; // prevent infinite loop on zero-length match
+        }
+      }
+      if (lastIndex < sampleInput.length) {
+        parts.push(sampleInput.slice(lastIndex));
+      }
+      return parts.length > 0 ? parts : sampleInput;
     } catch {
       return sampleInput;
     }
@@ -315,11 +340,10 @@ const RegexFormAndView = ({ profile = null, m3u, isOpen, onClose }) => {
                 </Text>
                 <Text
                   size="sm"
-                  dangerouslySetInnerHTML={{
-                    __html: getHighlightedSearchText(),
-                  }}
                   sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
-                />
+                >
+                  {getHighlightedSearchElements()}
+                </Text>
               </Paper>
             </Grid.Col>
 

@@ -28,6 +28,40 @@ import hashlib
 
 logger = logging.getLogger(__name__)
 
+
+def _build_xc_channel_num_map(channels):
+    """Build collision-free integer channel number mapping for XC clients.
+
+    XC clients require integer channel numbers.  Channels with float numbers
+    (e.g. 5.1) are remapped to the next available integer to avoid collisions.
+
+    Args:
+        channels: Iterable of Channel objects (must support two-pass iteration).
+
+    Returns:
+        dict mapping channel.id -> integer channel number.
+    """
+    channel_num_map = {}
+    used_numbers = set()
+
+    # First pass: assign integers for channels that already have integer numbers
+    for channel in channels:
+        if channel.channel_number == int(channel.channel_number):
+            num = int(channel.channel_number)
+            channel_num_map[channel.id] = num
+            used_numbers.add(num)
+
+    # Second pass: assign integers for channels with float numbers
+    for channel in channels:
+        if channel.channel_number != int(channel.channel_number):
+            candidate = int(channel.channel_number)
+            while candidate in used_numbers:
+                candidate += 1
+            channel_num_map[channel.id] = candidate
+            used_numbers.add(candidate)
+
+    return channel_num_map
+
 def get_client_identifier(request):
     """Get client information including IP, user agent, and a unique hash identifier
 
@@ -2139,19 +2173,19 @@ def xc_get_info(request, full=False):
     if user is None:
         return JsonResponse({'error': 'Unauthorized'}, status=401)
 
-    raw_host = request.get_host()
-    if ":" in raw_host:
-        hostname, port = raw_host.split(":", 1)
-    else:
-        hostname = raw_host
-        port = "443" if request.is_secure() else "80"
+    # Use the shared helper for consistent host/port resolution
+    hostname, port = get_host_and_port(request)
+    scheme = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
+    # Port for XC spec must always be a string; use standard port when None
+    xc_port = port or ("443" if scheme == "https" else "80")
+    xc_https_port = port or "443" if scheme == "https" else xc_port
 
     # Handle expiration date format
     if user.expires_at:
         exp_date = str(int(user.expires_at.timestamp()))
     else:
         # If no expiration, report a value far in the future or null
-        exp_date = "null" # XC convention for unlimited
+        exp_date = "null"  # XC convention for unlimited
 
     info = {
         "user_info": {
@@ -2161,6 +2195,9 @@ def xc_get_info(request, full=False):
             "auth": 1,
             "status": "Active",
             "exp_date": exp_date,
+            "is_trial": "0",
+            "active_cons": "0",
+            "created_at": str(int(user.date_joined.timestamp())),
             "max_connections": str(user.connection_limit),
             "allowed_output_formats": [
                 "ts",
@@ -2168,8 +2205,10 @@ def xc_get_info(request, full=False):
         },
         "server_info": {
             "url": hostname,
-            "server_protocol": request.scheme,
-            "port": port,
+            "server_protocol": scheme,
+            "port": xc_port,
+            "https_port": xc_https_port,
+            "rtmp_port": xc_port,
             "timezone": get_localzone().key,
             "timestamp_now": int(time.time()),
             "time_now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -2177,7 +2216,7 @@ def xc_get_info(request, full=False):
         },
     }
 
-    if full == True:
+    if full:
         info['categories'] = {
             "series": [],
             "movie": [],
@@ -2450,7 +2489,7 @@ def xc_get_live_streams(request, user, category_id=None):
             Q(streams__m3u_account__is_active=True) |
             Q(streams__xtream_account__is_active=True) |
             Q(streams__m3u_account__isnull=True, streams__xtream_account__isnull=True)
-        ).distinct().select_related('logo').order_by("channel_number")
+        ).distinct().select_related('logo', 'channel_group').order_by("channel_number")
     elif user_profile_count == 0:
         # No profiles exist in system - give unrestricted access (old behavior)
         filters = {"user_level__lte": user.user_level, "is_hidden": False}
@@ -2463,7 +2502,7 @@ def xc_get_live_streams(request, user, category_id=None):
             Q(streams__m3u_account__is_active=True) |
             Q(streams__xtream_account__is_active=True) |
             Q(streams__m3u_account__isnull=True, streams__xtream_account__isnull=True)
-        ).distinct().select_related('logo').order_by("channel_number")
+        ).distinct().select_related('logo', 'channel_group').order_by("channel_number")
     else:
         # User has specific limited profiles assigned
         # Get active group IDs from user's profiles
@@ -2501,36 +2540,24 @@ def xc_get_live_streams(request, user, category_id=None):
             Q(streams__m3u_account__is_active=True) |
             Q(streams__xtream_account__is_active=True) |
             Q(streams__m3u_account__isnull=True, streams__xtream_account__isnull=True)
-        ).distinct().select_related('logo').order_by("channel_number")
+        ).distinct().select_related('logo', 'channel_group').order_by("channel_number")
 
-    # Build collision-free mapping for XC clients (which require integers)
-    # This ensures channels with float numbers don't conflict with existing integers
-    channel_num_map = {}  # Maps channel.id -> integer channel number for XC
-    used_numbers = set()  # Track all assigned integer channel numbers
+    # Build collision-free integer channel number mapping for XC clients
+    channel_num_map = _build_xc_channel_num_map(channels)
 
-    # First pass: assign integers for channels that already have integer numbers
-    for channel in channels:
-        if channel.channel_number == int(channel.channel_number):
-            # Already an integer, use it directly
-            num = int(channel.channel_number)
-            channel_num_map[channel.id] = num
-            used_numbers.add(num)
-
-    # Second pass: assign integers for channels with float numbers
-    # Find next available number to avoid collisions
-    for channel in channels:
-        if channel.channel_number != int(channel.channel_number):
-            # Has decimal component, need to find available integer
-            # Start from truncated value and increment until we find an unused number
-            candidate = int(channel.channel_number)
-            while candidate in used_numbers:
-                candidate += 1
-            channel_num_map[channel.id] = candidate
-            used_numbers.add(candidate)
+    # Resolve default group once outside the loop to avoid N+1 queries
+    default_group_id = None
 
     # Build the streams list with the collision-free channel numbers
     for channel in channels:
         channel_num_int = channel_num_map[channel.id]
+
+        # Lazily resolve default group only if needed
+        group_id = channel.channel_group_id
+        if not group_id:
+            if default_group_id is None:
+                default_group_id = ChannelGroup.objects.get_or_create(name="Default Group")[0].id
+            group_id = default_group_id
 
         streams.append(
             {
@@ -2549,13 +2576,15 @@ def xc_get_live_streams(request, user, category_id=None):
                 ),
                 "epg_channel_id": str(channel_num_int),
                 "added": int(channel.created_at.timestamp()),
-                "is_adult": int(channel.is_adult),
-                "category_id": str(channel.channel_group.id if channel.channel_group else ChannelGroup.objects.get_or_create(name="Default Group")[0].id),
-                "category_ids": [channel.channel_group.id if channel.channel_group else ChannelGroup.objects.get_or_create(name="Default Group")[0].id],
+                "is_adult": str(int(channel.is_adult)),
+                "category_id": str(group_id),
+                "category_ids": [group_id],
+                "container_extension": "ts",
                 "custom_sid": None,
                 "tv_archive": 0,
                 "direct_source": "",
                 "tv_archive_duration": 0,
+                "thumbnail": "",
                 "uuid": str(channel.uuid),
             }
         )
@@ -2627,31 +2656,12 @@ def xc_get_epg(request, user, short=False):
         raise Http404()
 
     # Calculate the collision-free integer channel number for this channel
-    # This must match the logic in xc_get_live_streams to ensure consistency
-    # Get all channels in the same category for collision detection
-    category_channels = Channel.objects.filter(
-        channel_group=channel.channel_group,
+    # Uses the same global scope as xc_get_live_streams to ensure consistency
+    all_visible_channels = Channel.objects.filter(
         is_hidden=False
     ).order_by("channel_number")
 
-    channel_num_map = {}
-    used_numbers = set()
-
-    # First pass: assign integers for channels that already have integer numbers
-    for ch in category_channels:
-        if ch.channel_number == int(ch.channel_number):
-            num = int(ch.channel_number)
-            channel_num_map[ch.id] = num
-            used_numbers.add(num)
-
-    # Second pass: assign integers for channels with float numbers
-    for ch in category_channels:
-        if ch.channel_number != int(ch.channel_number):
-            candidate = int(ch.channel_number)
-            while candidate in used_numbers:
-                candidate += 1
-            channel_num_map[ch.id] = candidate
-            used_numbers.add(candidate)
+    channel_num_map = _build_xc_channel_num_map(all_visible_channels)
 
     # Get the mapped integer for this specific channel
     channel_num_int = channel_num_map.get(channel.id, int(channel.channel_number))
@@ -2938,13 +2948,22 @@ def xc_get_series_info(request, user, series_id):
         logger.error(f"Error refreshing series data for relation {series_relation.id}: {str(e)}")
 
     # Get unique episodes for this series that have relations from any active M3U account
-    # We query episodes directly to avoid duplicates when multiple relations exist
-    # (e.g., same episode in different languages/qualities)
-    from apps.vod.models import Episode
+    # Prefetch relations in a single query to avoid N+1 (one query per episode)
+    from apps.vod.models import Episode, M3UEpisodeRelation
+    from django.db.models import Prefetch
+
     episodes = Episode.objects.filter(
         series=series,
         m3u_relations__m3u_account__is_active=True
-    ).distinct().order_by('season_number', 'episode_number')
+    ).distinct().prefetch_related(
+        Prefetch(
+            'm3u_relations',
+            queryset=M3UEpisodeRelation.objects.filter(
+                m3u_account__is_active=True
+            ).select_related('m3u_account').order_by('-m3u_account__priority', 'id'),
+            to_attr='active_relations'
+        )
+    ).order_by('season_number', 'episode_number')
 
     # Group episodes by season
     seasons = {}
@@ -2953,12 +2972,8 @@ def xc_get_series_info(request, user, series_id):
         if season_num not in seasons:
             seasons[season_num] = []
 
-        # Get the highest priority relation for this episode (for container_extension, video/audio/bitrate)
-        from apps.vod.models import M3UEpisodeRelation
-        best_relation = M3UEpisodeRelation.objects.filter(
-            episode=episode,
-            m3u_account__is_active=True
-        ).select_related('m3u_account').order_by('-m3u_account__priority', 'id').first()
+        # Get the highest priority relation from prefetched data (no extra query)
+        best_relation = episode.active_relations[0] if episode.active_relations else None
 
         video = audio = bitrate = None
         container_extension = "mp4"

@@ -86,12 +86,18 @@ const usePlaylistsStore = create((set) => ({
     })),
 
   removePlaylists: (playlistIds) =>
-    set((state) => ({
-      playlists: state.playlists.filter(
-        (playlist) => !playlistIds.includes(playlist.id)
-      ),
-      // @TODO: remove playlist profiles here
-    })),
+    set((state) => {
+      const updatedProfiles = { ...state.profiles };
+      for (const id of playlistIds) {
+        delete updatedProfiles[id];
+      }
+      return {
+        playlists: state.playlists.filter(
+          (playlist) => !playlistIds.includes(playlist.id)
+        ),
+        profiles: updatedProfiles,
+      };
+    }),
 
   setRefreshProgress: (accountIdOrData, data) =>
     set((state) => {

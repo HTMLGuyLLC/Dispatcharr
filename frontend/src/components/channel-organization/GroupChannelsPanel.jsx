@@ -401,6 +401,9 @@ const ChannelRowGroup = React.memo(({
     const [imageUploadModalOpen, setImageUploadModalOpen] = useState(false);
     const [imagePreviewModalOpen, setImagePreviewModalOpen] = useState(false);
     const [isDraggingImageOver, setIsDraggingImageOver] = useState(false);
+    const [isEditingName, setIsEditingName] = useState(false);
+    const [editNameValue, setEditNameValue] = useState(channel.name);
+    const nameInputRef = useRef(null);
     const showVideo = useVideoStore((s) => s.showVideo);
     const env_mode = useSettingsStore((s) => s.environment.env_mode);
 
@@ -507,6 +510,49 @@ const ChannelRowGroup = React.memo(({
             console.error('Failed to toggle channel visibility:', error);
         }
     };
+
+    // --- Double-click to rename ---
+    useEffect(() => {
+        if (isEditingName && nameInputRef.current) {
+            nameInputRef.current.focus();
+            nameInputRef.current.select();
+        }
+    }, [isEditingName]);
+
+    const handleNameDoubleClick = useCallback((e) => {
+        e.stopPropagation();
+        setEditNameValue(channel.name);
+        setIsEditingName(true);
+    }, [channel.name]);
+
+    const handleNameSave = useCallback(async () => {
+        const trimmed = editNameValue.trim();
+        if (trimmed && trimmed !== channel.name) {
+            try {
+                await API.updateChannel({ id: channel.id, name: trimmed });
+                onRefresh();
+            } catch (error) {
+                console.error('Failed to rename channel:', error);
+                setEditNameValue(channel.name);
+            }
+        }
+        setIsEditingName(false);
+    }, [editNameValue, channel, onRefresh]);
+
+    const handleNameCancel = useCallback(() => {
+        setEditNameValue(channel.name);
+        setIsEditingName(false);
+    }, [channel.name]);
+
+    const handleNameKeyDown = useCallback((e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            handleNameSave();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            handleNameCancel();
+        }
+    }, [handleNameSave, handleNameCancel]);
     const handleDragOver = useCallback((e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -627,8 +673,8 @@ const ChannelRowGroup = React.memo(({
                         backgroundColor: 'transparent',
                         cursor: 'pointer',
                     }}
-                    onDoubleClick={handlePreviewChannel}
-                    onClick={() => onToggleSelect(channel.id)}
+                    onDoubleClick={!isEditingName ? handlePreviewChannel : undefined}
+                    onClick={() => !isEditingName && onToggleSelect(channel.id)}
                 >
                     <Table.Td style={{ width: isManualSort ? 110 : 80 }}>
                         <Group gap={4} wrap="nowrap">
@@ -683,7 +729,36 @@ const ChannelRowGroup = React.memo(({
                                         </Box>
                                     </Tooltip>
                                 ) : null}
-                                <Text size="sm" fw={isSelected ? 600 : 400} c={isSelected ? 'blue.4' : undefined}>{channel.name}</Text>
+                                {isEditingName ? (
+                                    <TextInput
+                                        ref={nameInputRef}
+                                        value={editNameValue}
+                                        onChange={(e) => setEditNameValue(e.target.value)}
+                                        onKeyDown={handleNameKeyDown}
+                                        onBlur={handleNameSave}
+                                        onClick={(e) => e.stopPropagation()}
+                                        size="xs"
+                                        style={{ flex: 1 }}
+                                        styles={{
+                                            input: {
+                                                minHeight: 22,
+                                                height: 22,
+                                                fontSize: 'var(--mantine-font-size-sm)',
+                                                padding: '0 4px',
+                                            }
+                                        }}
+                                    />
+                                ) : (
+                                    <Text
+                                        size="sm"
+                                        fw={isSelected ? 600 : 400}
+                                        c={isSelected ? 'blue.4' : undefined}
+                                        onDoubleClick={handleNameDoubleClick}
+                                        style={{ cursor: 'default' }}
+                                    >
+                                        {channel.name}
+                                    </Text>
+                                )}
                                 {channel.is_hidden && (
                                     <Tooltip label="Hidden from feed">
                                         <IconEyeOff size={14} style={{ color: 'var(--mantine-color-gray-6)', opacity: 0.6 }} />

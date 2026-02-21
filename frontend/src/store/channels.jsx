@@ -354,7 +354,7 @@ const useChannelsStore = create((set, get) => ({
       const profile = state.profiles[profileId];
       if (!profile) return {};
 
-      const currentChannelsSet = profile.channels;
+      const currentChannelsSet = new Set(profile.channels);
       let hasChanged = false;
 
       if (enabled) {

@@ -29,10 +29,10 @@ const useStreamProfilesStore = create((set) => ({
       ),
     })),
 
-  removeStreamProfiles: (propfileIds) =>
+  removeStreamProfiles: (profileIds) =>
     set((state) => ({
       profiles: state.profiles.filter(
-        (profile) => !propfileIds.includes(profile.id)
+        (profile) => !profileIds.includes(profile.id)
       ),
     })),
 }));

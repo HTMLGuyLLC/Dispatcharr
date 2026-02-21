@@ -87,7 +87,7 @@ const RowActions = ({
   refreshPlaylist,
 }) => {
   const iconSize =
-    tableSize == 'default' ? 'sm' : tableSize == 'compact' ? 'xs' : 'md';
+    tableSize === 'default' ? 'sm' : tableSize === 'compact' ? 'xs' : 'md';
 
   return (
     <>
@@ -131,7 +131,7 @@ const M3UTable = () => {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [playlistToDelete, setPlaylistToDelete] = useState(null);
   const [data, setData] = useState([]);
-  const [sorting, setSorting] = useState([{ id: 'name', desc: '' }]);
+  const [sorting, setSorting] = useState([{ id: 'name', desc: false }]);
   const [deleting, setDeleting] = useState(false);
 
   const playlists = usePlaylistsStore((s) => s.playlists);
@@ -348,12 +348,12 @@ const M3UTable = () => {
     );
   };
 
-  const editPlaylist = async (playlist = null) => {
+  const editPlaylist = useCallback(async (playlist = null) => {
     setPlaylist(playlist);
     setPlaylistModalOpen(true);
-  };
+  }, []);
 
-  const refreshPlaylist = async (id) => {
+  const refreshPlaylist = useCallback(async (id) => {
     // Provide immediate visual feedback before the API call
     setRefreshProgress(id, {
       action: 'initializing',
@@ -376,9 +376,21 @@ const M3UTable = () => {
         status: 'error',
       });
     }
-  };
+  }, [setRefreshProgress]);
 
-  const deletePlaylist = async (id) => {
+  const executeDeletePlaylist = useCallback(async (id) => {
+    setIsLoading(true);
+    setDeleting(true);
+    try {
+      await API.deletePlaylist(id);
+    } finally {
+      setDeleting(false);
+      setIsLoading(false);
+      setConfirmDeleteOpen(false);
+    }
+  }, []);
+
+  const deletePlaylist = useCallback(async (id) => {
     // Get playlist details for the confirmation dialog
     const playlist = playlists.find((p) => p.id === id);
     setPlaylistToDelete(playlist);
@@ -390,21 +402,9 @@ const M3UTable = () => {
     }
 
     setConfirmDeleteOpen(true);
-  };
+  }, [playlists, isWarningSuppressed, executeDeletePlaylist]);
 
-  const executeDeletePlaylist = async (id) => {
-    setIsLoading(true);
-    setDeleting(true);
-    try {
-      await API.deletePlaylist(id);
-    } finally {
-      setDeleting(false);
-      setIsLoading(false);
-      setConfirmDeleteOpen(false);
-    }
-  };
-
-  const toggleActive = async (playlist) => {
+  const toggleActive = useCallback(async (playlist) => {
     try {
       // Send only the is_active field to trigger our special handling
       await API.updatePlaylist(
@@ -417,7 +417,7 @@ const M3UTable = () => {
     } catch (error) {
       console.error('Error toggling active state:', error);
     }
-  };
+  }, []);
 
   const columns = useMemo(
     () => [
@@ -601,7 +601,7 @@ const M3UTable = () => {
       {
         id: 'actions',
         header: 'Actions',
-        size: tableSize == 'compact' ? 75 : 100,
+        size: tableSize === 'compact' ? 75 : 100,
       },
     ],
     [
@@ -664,13 +664,12 @@ const M3UTable = () => {
   }, [editPlaylistId, playlists]);
 
   const onSortingChange = (column) => {
-    console.log(column);
     const sortField = sorting[0]?.id;
     const sortDirection = sorting[0]?.desc;
 
     const newSorting = [];
-    if (sortField == column) {
-      if (sortDirection == false) {
+    if (sortField === column) {
+      if (sortDirection === false) {
         newSorting[0] = {
           id: column,
           desc: true,
@@ -692,13 +691,10 @@ const M3UTable = () => {
         playlists
           .filter((playlist) => playlist.locked === false)
           .sort((a, b) => {
-            console.log(a);
-            console.log(newSorting[0].id);
-            if (a[compareColumn] !== b[compareColumn]) {
-              return compareDesc ? 1 : -1;
-            }
-
-            return 0;
+            const aVal = a[compareColumn] ?? '';
+            const bVal = b[compareColumn] ?? '';
+            const cmp = String(aVal).localeCompare(String(bVal));
+            return compareDesc ? -cmp : cmp;
           })
       );
     }
@@ -706,7 +702,7 @@ const M3UTable = () => {
 
   const renderHeaderCell = (header) => {
     let sortingIcon = ArrowUpDown;
-    if (sorting[0]?.id == header.id) {
+    if (sorting[0]?.id === header.id) {
       if (sorting[0].desc === false) {
         sortingIcon = ArrowUpNarrowWide;
       } else {
@@ -747,7 +743,7 @@ const M3UTable = () => {
           />
         );
     }
-  }, []);
+  }, [tableSize, editPlaylist, deletePlaylist, refreshPlaylist]);
 
   const table = useTable({
     columns,
@@ -850,7 +846,6 @@ const M3UTable = () => {
 
       <Paper
         style={{
-          bgcolor: theme.palette.background.paper,
           borderRadius: 2,
         }}
       >

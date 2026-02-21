@@ -57,8 +57,6 @@ const StreamProfile = ({ profile = null, isOpen, onClose }) => {
     return <></>;
   }
 
-  const userAgentValue = watch('user_agent');
-
   return (
     <Modal opened={isOpen} onClose={onClose} title="Stream Profile">
       <form onSubmit={handleSubmit(onSubmit)}>
@@ -83,8 +81,8 @@ const StreamProfile = ({ profile = null, isOpen, onClose }) => {
 
         <Select
           label="User-Agent"
-          {...register('user_agent')}
-          value={userAgentValue}
+          value={watch('user_agent')}
+          onChange={(value) => setValue('user_agent', value || '')}
           error={errors.user_agent?.message}
           data={userAgents.map((ua) => ({
             label: ua.name,
